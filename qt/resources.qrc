@@ -1,0 +1,62 @@
+<RCC>
+    <qresource prefix="/fonts">
+        <file>fonts/Montserrat-Black.ttf</file>
+        <file>fonts/Montserrat-BlackItalic.ttf</file>
+        <file>fonts/Montserrat-Bold.ttf</file>
+        <file>fonts/Montserrat-BoldItalic.ttf</file>
+        <file>fonts/Montserrat-ExtraBold.ttf</file>
+        <file>fonts/Montserrat-ExtraBoldItalic.ttf</file>
+        <file>fonts/Montserrat-ExtraLight.ttf</file>
+        <file>fonts/Montserrat-ExtraLightItalic.ttf</file>
+        <file>fonts/Montserrat-Italic.ttf</file>
+        <file>fonts/Montserrat-Light.ttf</file>
+        <file>fonts/Montserrat-LightItalic.ttf</file>
+        <file>fonts/Montserrat-Medium.ttf</file>
+        <file>fonts/Montserrat-MediumItalic.ttf</file>
+        <file>fonts/Montserrat-Regular.ttf</file>
+        <file>fonts/Montserrat-SemiBold.ttf</file>
+        <file>fonts/Montserrat-SemiBoldItalic.ttf</file>
+        <file>fonts/Montserrat-Thin.ttf</file>
+        <file>fonts/Montserrat-ThinItalic.ttf</file>
+    </qresource>
+    <qresource prefix="/svg">
+        <file>svg/add_circle.svg</file>
+        <file>svg/arrow_back_ios_new.svg</file>
+        <file>svg/interests.svg</file>
+        <file>svg/select_window_2.svg</file>
+        <file>svg/settings.svg</file>
+        <file>svg/shapes.svg</file>
+        <file>svg/article.svg</file>
+        <file>svg/content_copy.svg</file>
+        <file>svg/draw.svg</file>
+        <file>svg/ink_eraser.svg</file>
+        <file>svg/save.svg</file>
+        <file>svg/select.svg</file>
+        <file>svg/menu_24dp_E8EAED_FILL0_wght400_GRAD0_opsz24.svg</file>
+    </qresource>
+    <qresource prefix="/png">
+        <file>png/Star 1.svg</file>
+        <file>png/resistor.svg</file>
+        <file>png/Rectangle 25.svg</file>
+        <file>png/Rectangle 24.svg</file>
+        <file>png/Line 17.svg</file>
+        <file>png/inductor.svg</file>
+        <file>png/Group 41.svg</file>
+        <file>png/Group 21.svg</file>
+        <file>png/Group 20.svg</file>
+        <file>png/Group 19.svg</file>
+        <file>png/Ellipse 5.svg</file>
+        <file>png/Ellipse 4.svg</file>
+        <file>png/const voltage source.svg</file>
+        <file>png/const current source.svg</file>
+        <file>png/capacitor.svg</file>
+        <file>png/axis.svg</file>
+        <file>png/axis (3).svg</file>
+        <file>png/axis (2).svg</file>
+        <file>png/axis (1).svg</file>
+        <file>png/Arrow 1.svg</file>
+        <file>png/upload_file.svg</file>
+        <file>png/delete.svg</file>
+        <file>png/add_circle.svg</file>
+    </qresource>
+</RCC>
