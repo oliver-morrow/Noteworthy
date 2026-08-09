@@ -5,7 +5,7 @@ The client uses Qt for its interface and graphics scene, compiles to WebAssembly
 for the browser, and exchanges JSON events with a C++ server over HTTP and
 WebSockets.
 
-[Open the live demo](https://www.noteworthy.howdoesthiseven.work/)
+[Open the live demo](https://noteworthy.howdoesthiseven.work/)
 
 ## What it supports
 
