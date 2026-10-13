@@ -5,7 +5,27 @@ The client uses Qt for its interface and graphics scene, compiles to WebAssembly
 for the browser, and exchanges JSON events with a C++ server over HTTP and
 WebSockets.
 
-[Open the live demo](https://noteworthy.howdoesthiseven.work/)
+![Two browser windows sharing a Noteworthy canvas](docs/assets/two-user-demo.gif)
+
+The recording shows the original two-user demo. It is included here so the app
+can be seen without a running server. The former live demo is currently offline.
+
+## Project background and my contribution
+
+Noteworthy was built as an ELEC376 group project at Queen's University in
+September–December 2024. This repository combines the client and server in an
+imported snapshot. Its first commit records that import; the original development
+history is not included here.
+
+I implemented the drawing tools and contributed to room state, WebSocket
+collaboration, HTTP endpoints, and PDF import. The interface and remaining
+features were developed with the project team.
+
+The [original client repository](https://github.com/davlaf/noteworthy-qt) and
+[original server repository](https://github.com/davlaf/noteworthy-server) were
+published by teammate David. The demo recording above comes from the client
+repository. The team's [project presentation](server/ELEC376%20Group%209%20-%20Noteworthy.pdf)
+documents the features, technologies, and development retrospective.
 
 ## What it supports
 
