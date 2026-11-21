@@ -83,12 +83,10 @@ int startServer()
 
 int main()
 {
-    std::string room_id = state.createRoom("ABCDE", "joe", "ggggghh");
-    std::string room_id2 = state.createRoom("12345", "david", "");
-
-    // Initialize PDFium
+    // Initialize PDFium (only used when NW_ENABLE_PDF=1)
     FPDF_InitLibrary();
 
-    return startServer();
+    int result = startServer();
     FPDF_DestroyLibrary();
+    return result;
 }

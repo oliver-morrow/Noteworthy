@@ -1,28 +1,70 @@
+# Hardened defaults for a public demo. Every service gets the same limits.
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   noteworthy-server:
-    restart: unless-stopped
+    <<: *hardening
     build:
       context: .
+    image: noteworthy-server:local
+    environment:
+      NW_ENABLE_PDF: "0" # PDF import is off for the public demo
+      NW_MAX_ROOMS: "200"
+      NW_ROOM_IDLE_MINUTES: "120"
+      NW_MAX_USERS_PER_ROOM: "16"
+      NW_MAX_PAGES_PER_ROOM: "50"
+      NW_MAX_OBJECTS_PER_PAGE: "5000"
+      NW_MAX_POINTS_PER_STROKE: "10000"
+      NW_WS_MESSAGES_PER_SECOND: "120"
+      NW_WS_MESSAGE_BURST: "240"
+    # Loopback only, for local testing. Docker-published ports bypass ufw, so
+    # never bind these to 0.0.0.0; the tunnel reaches the server over the
+    # Compose network instead.
     ports:
-      - "8080:8080"
-      - "8081:8081"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
+    tmpfs:
+      - /tmp:size=16m,uid=10001
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+
   noteworthy-qt: # you probably wont have this image
+    <<: *hardening
     profiles:
       - staging
     image: davlaf/noteworthy-qt:latest
+    read_only: false # nginx writes pid/cache files
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]
     ports:
-      - "8084:80"
+      - "127.0.0.1:8084:80"
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+
   tunnel:
+    <<: *hardening
     profiles:
       - staging
-    volumes:
-      - ./cloudflare-tunnel-config.yml:/etc/cloudflared/config.yml  # The minimal config file with protocol
+    image: cloudflare/cloudflared:2026.10.7
     container_name: cloudflared-tunnel
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    command: tunnel run
-    # ask david for this file it will not be added to git
+    command: tunnel --no-autoupdate run
+    volumes:
+      - ./cloudflare-tunnel-config.yml:/etc/cloudflared/config.yml:ro # The minimal config file with protocol
+    # Holds TUNNEL_TOKEN=... for a remotely managed tunnel. Never commit it.
     env_file: cloudflare-tunnel-secret.env
-
-
-    
+    depends_on:
+      - noteworthy-server
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64

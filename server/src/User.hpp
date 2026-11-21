@@ -4,6 +4,8 @@
 #ifndef NOTEWORTHY_QT
 #include <libwebsockets.h>
 #endif
+#include <algorithm>
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -17,7 +19,28 @@ public:
     bool is_connected = false;
     bool is_kicked = false;
 #ifndef NOTEWORTHY_QT
-    struct lws* socket;
+    struct lws* socket = nullptr;
+
+    // Per-user token bucket for incoming WebSocket messages.
+    double rate_tokens = -1;
+    std::chrono::steady_clock::time_point rate_last_refill;
+
+    bool allowMessage(double per_second, double burst)
+    {
+        auto now = std::chrono::steady_clock::now();
+        if (rate_tokens < 0) {
+            rate_tokens = burst;
+        } else {
+            std::chrono::duration<double> elapsed = now - rate_last_refill;
+            rate_tokens = std::min(burst, rate_tokens + elapsed.count() * per_second);
+        }
+        rate_last_refill = now;
+        if (rate_tokens < 1) {
+            return false;
+        }
+        rate_tokens -= 1;
+        return true;
+    }
 
     User(std::string room_id, std::string username, struct lws* socket = nullptr)
         : SendableObject(room_id)
@@ -68,7 +91,7 @@ public:
         retrieveMetaInformation(json);
         json.at("username").get_to(username);
         json.at("is_connected").get_to(is_connected);
-        json.at("is_kicked").get_to(is_connected);
+        json.at("is_kicked").get_to(is_kicked);
     };
 
     void createConnectEvent(nlohmann::json& json)
@@ -106,7 +129,7 @@ public:
             break;
         }
         case KICK: {
-            is_kicked = false;
+            is_kicked = true;
             break;
         }
         };
@@ -122,8 +145,12 @@ public:
     {
         return socket == other.socket;
     }
+    // Only call from the WebSocket service thread (see WebSocketHandler::queueBroadcast).
     void sendEvent(const std::string& message) const
     {
+        if (socket == nullptr) {
+            return;
+        }
         // Prepare the message buffer
         size_t message_buffer_length = message.length() + 1; // Include null terminator
         std::vector<unsigned char> buf(LWS_PRE + message_buffer_length);
