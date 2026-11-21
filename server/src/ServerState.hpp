@@ -27,25 +27,23 @@ public:
 
 class ServerState {
 public:
-    // Creates a room with a random 5-character ID (the client's room-code UI
-    // is fixed at 5 characters). Throws ServerFullError at max_rooms.
-    std::string createRoom(const std::string& owner, size_t max_rooms)
+    std::string createRoom(const std::string& owner, const std::string& session_token, size_t max_rooms)
     {
         std::lock_guard<std::mutex> lock(room_map_mutex);
         if (room_map.size() >= max_rooms) {
             throw ServerFullError();
         }
 
-        std::string new_room_id;
+        std::string new_room_id(8, '0');
         do {
-            new_room_id = ".....";
-            for (int i = 0; i < 5; i++) {
-                auto random_letter_index = IDGenerator::newID() % valid_room_id_chars.size();
-                new_room_id[i] = valid_room_id_chars[random_letter_index];
+            auto random_bits = IDGenerator::newID();
+            for (char& letter : new_room_id) {
+                letter = valid_room_id_chars[random_bits & 31];
+                random_bits >>= 5;
             }
         } while (room_map.count(new_room_id) > 0);
 
-        room_map[new_room_id] = std::make_unique<RoomState>(new_room_id, owner, "");
+        room_map[new_room_id] = std::make_unique<RoomState>(new_room_id, owner, session_token);
         return new_room_id;
     }
 
@@ -94,7 +92,7 @@ public:
     }
 
 private:
-    const std::string valid_room_id_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ12345679";
+    static constexpr char valid_room_id_chars[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
     std::mutex room_map_mutex;
     std::unordered_map<std::string, std::unique_ptr<RoomState>>

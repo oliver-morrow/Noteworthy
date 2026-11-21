@@ -1,4 +1,5 @@
 #pragma once
+#include <openssl/crypto.h>
 
 #include "CanvasObject.hpp"
 #include <chrono>
@@ -152,12 +153,12 @@ public:
     std::string password;
     std::chrono::steady_clock::time_point last_activity = std::chrono::steady_clock::now();
 
-    RoomState(std::string room_id, std::string owner_id, std::string password)
+    RoomState(std::string room_id, std::string owner_id, std::string session_token)
         : SendableObject(room_id)
         , owner_id(owner_id)
-        , password(password)
     {
         auto owner_connection = std::make_unique<User>(room_id, owner_id);
+        owner_connection->session_token = std::move(session_token);
         addUser(std::move(owner_connection));
     }
 
@@ -186,7 +187,6 @@ public:
     {
         addMetaInformation(json);
         json["owner_id"] = owner_id;
-        json["password"] = password;
         json["object_type"] = ROOM;
     }
 
@@ -194,7 +194,6 @@ public:
     {
         retrieveMetaInformation(json);
         json.at("owner_id").get_to(owner_id);
-        json.at("password").get_to(password);
     }
 
     void toJsonEventList(nlohmann::json& json)
@@ -360,6 +359,20 @@ public:
     }
 
     // DANGEROUS!!!
+    User* userForSession(const std::string& token)
+    {
+        if (token.size() != 64) {
+            return nullptr;
+        }
+        for (auto& [username, user] : users) {
+            if (!user->is_kicked && user->session_token.size() == token.size()
+                && CRYPTO_memcmp(user->session_token.data(), token.data(), token.size()) == 0) {
+                return user.get();
+            }
+        }
+        return nullptr;
+    }
+
     User* getUserPtr(const std::string& username)
     {
         std::lock_guard<std::mutex> lock(room_mutex);

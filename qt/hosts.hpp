@@ -1,13 +1,9 @@
-// Comment or uncomment this line to select local or hosted
-#define HOSTED
+#pragma once
 
-#ifdef HOSTED
-#define NW_HTTP std::string("https://noteworthy.howdoesthiseven.work")
-#define NW_WS std::string("wss://nw-ws.howdoesthiseven.work")
-#else
-#define NW_HTTP std::string("http://localhost:8080")
-#define NW_WS std::string("ws://localhost:8081")
-#endif
+#include <string>
+
+#define NW_HTTP std::string(NW_HTTP_URL)
+#define NW_WS std::string(NW_WS_URL)
 
 // PDF import needs NW_ENABLE_PDF=1 on the server. Keep this at 0 for the
 // public demo so the upload button is hidden.

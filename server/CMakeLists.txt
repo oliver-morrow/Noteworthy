@@ -46,6 +46,7 @@ target_link_libraries(${PROJECT_NAME}
 
 # Find pkg-config (required for using pkg-config to find libraries)
 find_package(PkgConfig REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 # Use pkg-config to find Pistache, WebSockets, nlohmann_json, LCMS2, and MuPDF
 pkg_check_modules(LIBWEBSOCKETS REQUIRED libwebsockets)
@@ -73,6 +74,7 @@ include_directories(
 
 # Link libraries found by pkg-config
 target_link_libraries(${PROJECT_NAME}
+    OpenSSL::Crypto
     ${LIBWEBSOCKETS_LIBRARIES}
     ${NLOHMANN_JSON_LIBRARIES}
     ${PDFIUM_LIB}

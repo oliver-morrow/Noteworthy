@@ -5,6 +5,7 @@ import requests, websockets
 HTTP, WS = "http://127.0.0.1:8080", "ws://127.0.0.1:8081"
 ROOM, PAGE, USER, STROKE, TEXT = 0, 1, 2, 3, 6
 results = []
+sessions = {}
 
 
 def check(name, ok, detail=""):
@@ -20,15 +21,30 @@ def alive():
 
 
 def room(owner):
-    return requests.post(f"{HTTP}/v1/rooms", params={"username": owner}).text
+    response = requests.post(f"{HTTP}/v1/rooms", params={"username": owner}, timeout=3)
+    response.raise_for_status()
+    data = response.json()
+    sessions[data["room_id"], owner] = data["session_token"]
+    return data["room_id"]
 
 
-def join(r, user):
-    return requests.post(f"{HTTP}/v1/rooms/{r}/users", params={"username": user})
+def join(r, user, password=""):
+    headers = {"Authorization": f"Bearer {password}"} if password else {}
+    response = requests.post(f"{HTTP}/v1/rooms/{r}/users", params={"username": user},
+                             headers=headers, timeout=3)
+    if response.status_code == 201:
+        sessions[r, user] = response.json()["session_token"]
+    return response
+
+
+def room_state(r, user):
+    return requests.get(f"{HTTP}/v1/rooms/{r}", timeout=3,
+                        headers={"Authorization": f"Bearer {sessions[r, user]}"})
 
 
 def ws(r, user):
-    return websockets.connect(f"{WS}?username={user}&room_id={r}", subprotocols=["echo-protocol"])
+    return websockets.connect(f"{WS}?room_id={r}",
+                              subprotocols=["echo-protocol", f"nw-session.{sessions[r, user]}"])
 
 
 async def recv_all(sock, timeout=0.7):
@@ -45,9 +61,16 @@ async def recv_all(sock, timeout=0.7):
 async def main():
     # --- the showcase flow still works ---
     r = room("alice")
+    check("room code has eight characters", len(r) == 8)
     check("join second user", join(r, "bob").status_code == 201)
+    check("room snapshot requires a session", requests.get(f"{HTTP}/v1/rooms/{r}", timeout=3).status_code == 401)
+    async with ws(r, "bob") as first_connection:
+        await asyncio.sleep(0.1)
+        check("issued session connects", first_connection.state.name == "OPEN")
+    check("reserved usernames require the original session to reconnect", join(r, "bob").status_code == 409)
     async with ws(r, "alice") as a, ws(r, "bob") as b:
         await recv_all(a); await recv_all(b)
+        check("the original session reconnects", b.state.name == "OPEN")
         await a.send(json.dumps({"object_type": PAGE, "event_type": 2, "room_id": r,
                                  "page_id": 111, "previous_page_id": 0, "base64_image": ""}))
         got = await recv_all(b)
@@ -67,7 +90,7 @@ async def main():
         check("HTTP join broadcast reaches WS users",
               any(e.get("object_type") == USER and e.get("username") == "carol" for e in got))
 
-        state = requests.get(f"{HTTP}/v1/rooms/{r}").json()
+        state = room_state(r, "alice").json()
         check("room state has page and stroke",
               any(e.get("object_type") == STROKE for e in state) and any(e.get("object_type") == PAGE for e in state))
 
@@ -83,16 +106,19 @@ async def main():
         # --- room isolation and owner checks ---
         victim = room("victim")
         await a.send(json.dumps({"object_type": ROOM, "event_type": 2, "room_id": victim, "new_password": "x"}))
-        await asyncio.sleep(0.3)
-        check("cross-room password change blocked", requests.get(f"{HTTP}/v1/rooms/{victim}").status_code == 200)
+        changes = await recv_all(b)
+        check("cross-room password change blocked", join(victim, "another member").status_code == 201)
         check("cross-room event applied to sender's own room instead",
-              requests.get(f"{HTTP}/v1/rooms/{r}").status_code == 423)  # owner set own room's pw: allowed
+              join(r, "another member").status_code == 423)
+        check("password changes are not broadcast", not any("new_password" in event for event in changes))
+        check("room snapshots do not include passwords", all("password" not in event for event in room_state(r, "bob").json()))
+        check("password still lets new members join", join(r, "new member", "x").status_code == 201)
         await a.send(json.dumps({"object_type": ROOM, "event_type": 2, "room_id": r, "new_password": ""}))
         await asyncio.sleep(0.3)
 
         await b.send(json.dumps({"object_type": ROOM, "event_type": 2, "room_id": r, "new_password": "bob"}))
         await asyncio.sleep(0.3)
-        check("non-owner cannot set password", requests.get(f"{HTTP}/v1/rooms/{r}").status_code == 200)
+        check("non-owner cannot set password", join(r, "guest").status_code == 201)
 
         await b.send(json.dumps({"object_type": USER, "event_type": 4, "room_id": r, "username": "alice"}))
         await asyncio.sleep(0.3)
@@ -109,6 +135,7 @@ async def main():
     except websockets.InvalidStatus:
         check("kicked user cannot reconnect", True)
     check("kicked user cannot rejoin over HTTP", join(r, "bob").status_code == 403)
+    check("kicked session cannot read room state", room_state(r, "bob").status_code == 401)
 
     # --- rate limiting ---
     r2 = room("spam")
@@ -133,6 +160,8 @@ async def main():
     check("seeded demo rooms removed", requests.get(f"{HTTP}/v1/rooms/12345").status_code == 404)
     check("server alive at end", alive())
     print(f"\n{sum(results)}/{len(results)} passed")
+    return all(results)
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    raise SystemExit(not asyncio.run(main()))

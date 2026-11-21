@@ -72,8 +72,9 @@ private:
 
         // create a room with that user as owner, with no password
         try {
-            std::string room_id = state.createRoom(username_query, Config::get().max_rooms);
-            response.send(Http::Code::Created, room_id);
+            const auto token = IDGenerator::newSessionToken();
+            const auto room_id = state.createRoom(username_query, token, Config::get().max_rooms);
+            sendJson(response, Http::Code::Created, { { "room_id", room_id }, { "session_token", token } });
         } catch (const ServerFullError& e) {
             response.send(Http::Code::Service_Unavailable,
                 "The demo is at capacity. Try again later.");
@@ -86,141 +87,79 @@ private:
         response.send(Http::Code::Not_Found, "Invalid route");
     }
 
-    // void handleOptionsRequest(const Rest::Request& request,
-    //     Http::ResponseWriter response)
-    // {
-    //     response.headers()
-    //         .add<Http::Header::AccessControlAllowOrigin>(
-    //             "*") // or specify the origin: "http://localhost:30000"
-    //         .add<Http::Header::AccessControlAllowMethods>("GET, OPTIONS")
-    //         .add<Http::Header::AccessControlAllowHeaders>(
-    //             "Authorization, Content-Type, Accept-Language");
-    //     response.send(Http::Code::Ok, "epic");
-    // }
-    bool isAuthenticated(
-        std::string& room_id,
-        const Rest::Request& request,
-        Http::ResponseWriter& response)
+    static std::string bearerToken(const Rest::Request& request)
     {
-        auto authHeader = request.headers().tryGet<Http::Header::Authorization>();
-
-        const std::string bearerPrefix = "Bearer ";
-        if (authHeader) {
-            const std::string authHeaderPrefix = authHeader->value().substr(0, bearerPrefix.size());
-
-            if (authHeaderPrefix != bearerPrefix) {
-                response.send(Http::Code::Unauthorized,
-                    "Unauthorized: Using incorrect auth type");
-                return false;
-            }
+        const auto header = request.headers().tryGet<Http::Header::Authorization>();
+        if (!header || header->value().compare(0, 7, "Bearer ") != 0) {
+            return "";
         }
+        return header->value().substr(7);
+    }
 
-        std::string receivedToken = "";
-        if (authHeader) {
-            receivedToken = authHeader->value().substr(7);
-        }
-
-        if (!state.hasRoom(room_id)) {
-            response.send(Http::Code::Not_Found, "Room not found");
-            return false;
-        }
-
-        std::string room_password;
-        state.manipulateRoom(room_id, [&](RoomState& room) {
-            room_password = room.password;
-        });
-
-        bool room_has_password = room_password != "";
-
-        if (!room_has_password) {
-            // the room exists, and the room has no password
-            return true;
-        }
-
-        if (!authHeader && room_has_password) {
-            response.send(Http::Code::Locked, "Room needs password");
-            return false;
-        }
-
-        bool password_is_correct = room_password == receivedToken;
-
-        if (!password_is_correct) {
-            response.send(Http::Code::Forbidden, "Incorrect Password");
-            return false;
-        }
-
-        // the room exists, has a password and the password was correct
-        return true;
+    static void sendJson(Http::ResponseWriter& response, Http::Code code, const nlohmann::json& body)
+    {
+        response.headers().addRaw(Http::Header::Raw("Cache-Control", "no-store"));
+        response.setMime(MIME(Application, Json));
+        response.send(code, body.dump());
     }
 
     void getRoom(const Rest::Request& request, Http::ResponseWriter& response)
     {
-        auto room_id = request.param(":room_id").as<std::string>();
-
-        if (!isAuthenticated(room_id, request, response)) {
+        const auto room_id = request.param(":room_id").as<std::string>();
+        const auto token = bearerToken(request);
+        nlohmann::json events;
+        state.manipulateRoom(room_id, [&](RoomState& room) {
+            if (room.userForSession(token)) {
+                room.toJsonEventList(events);
+            }
+        });
+        if (events.is_null()) {
+            response.send(Http::Code::Unauthorized, "A valid room session is required");
             return;
         }
-
-        nlohmann::json event_list_json;
-        state.manipulateRoom(room_id, [&](RoomState& room) {
-            room.toJsonEventList(event_list_json);
-        });
-        response.setMime(MIME(Application, Json));
-        response.send(Http::Code::Ok, event_list_json.dump());
+        sendJson(response, Http::Code::Ok, events);
     }
 
-    void createUser(const Rest::Request& request,
-        Http::ResponseWriter& response)
+    void createUser(const Rest::Request& request, Http::ResponseWriter& response)
     {
-        auto room_id = request.param(":room_id").as<std::string>();
-        auto username_query = request.query().get("username").value_or("");
-
-        if (!isAuthenticated(room_id, request, response)) {
+        const auto room_id = request.param(":room_id").as<std::string>();
+        const auto username = request.query().get("username").value_or("");
+        const auto password = bearerToken(request);
+        if (!isValidUsername(username)) {
+            response.send(Http::Code::Bad_Request, "A username of 1-32 characters is required");
             return;
         }
 
-        if (!isValidUsername(username_query)) {
-            response.send(Http::Code::Bad_Request,
-                "A username of 1-32 characters is required");
-            return;
-        }
-
-        std::string username = username_query;
-        const size_t max_users = Config::get().max_users_per_room;
-
-        // Manipulate the room state to add a new user if the username is unique
-        state.manipulateRoom(room_id, [&room_id, &username, &response, max_users](RoomState& room) {
-            if (room.isUserConnectedToRoom(username)) {
-                response.send(Http::Code::Conflict,
-                    "Username already connected in the room");
+        state.manipulateRoom(room_id, [&](RoomState& room) {
+            if (!room.password.empty() && password.empty()) {
+                response.send(Http::Code::Locked, "Room needs password");
                 return;
             }
-
+            if (!room.password.empty() && room.password != password) {
+                response.send(Http::Code::Forbidden, "Incorrect Password");
+                return;
+            }
             if (room.isUserKicked(username)) {
-                response.send(Http::Code::Forbidden,
-                    "you were kicked");
+                response.send(Http::Code::Forbidden, "You were kicked");
                 return;
             }
-
             if (room.isUserInRoom(username)) {
-                response.send(Http::Code::Ok, "Resumed an existing user");
+                response.send(Http::Code::Conflict, "Username already reserved in the room");
                 return;
             }
-
-            if (room.userCount() >= max_users) {
+            if (room.userCount() >= Config::get().max_users_per_room) {
                 response.send(Http::Code::Forbidden, "Room is full");
                 return;
             }
 
+            const auto token = IDGenerator::newSessionToken();
             auto user = std::make_unique<User>(room_id, username);
+            user->session_token = token;
             nlohmann::json event;
             user->createCreateEvent(event);
             room.addUser(std::move(user));
-
             WebSocketHandler::queueBroadcast(room_id, event.dump());
-
-            // Return success response
-            response.send(Http::Code::Created, "User created successfully");
+            sendJson(response, Http::Code::Created, { { "room_id", room_id }, { "session_token", token } });
         });
     }
 
@@ -255,10 +194,7 @@ private:
         auto room_id = request.param(":room_id").as<std::string>();
         auto previous_page_id_query = request.query().get("previous_page_id").value_or("");
 
-        if (!isAuthenticated(room_id, request, response)) {
-            return;
-        }
-
+        const auto token = bearerToken(request);
         uint64_t previous_page_id;
         try {
             previous_page_id = std::stoull(previous_page_id_query);
@@ -268,12 +204,18 @@ private:
         }
 
         // Check the insert position before spending CPU on rendering.
+        bool authorized = false;
         bool position_ok = false;
         size_t page_count = 0;
         state.manipulateRoom(room_id, [&](RoomState& room) {
+            authorized = room.userForSession(token) != nullptr;
             position_ok = previous_page_id == 0 || room.hasPage(previous_page_id);
             page_count = room.pageCount();
         });
+        if (!authorized) {
+            response.send(Http::Code::Unauthorized, "A valid room session is required");
+            return;
+        }
         if (!position_ok) {
             response.send(Http::Code::Bad_Request, "previous page id not found");
             return;
@@ -294,6 +236,10 @@ private:
 
         bool inserted = false;
         state.manipulateRoom(room_id, [&](RoomState& room) {
+            authorized = room.userForSession(token) != nullptr;
+            if (!authorized || base64_list.size() > config.max_pages_per_room - room.pageCount()) {
+                return;
+            }
             if (previous_page_id != 0 && !room.hasPage(previous_page_id)) {
                 return; // deleted while rendering
             }
@@ -314,8 +260,12 @@ private:
             WebSocketHandler::queueBroadcast(room_id, event.dump());
         });
 
+        if (!authorized) {
+            response.send(Http::Code::Unauthorized, "A valid room session is required");
+            return;
+        }
         if (!inserted) {
-            response.send(Http::Code::Bad_Request, "previous page id not found");
+            response.send(Http::Code::Conflict, "Page position or capacity changed during import");
             return;
         }
         response.send(Http::Code::Created, "successfully created");

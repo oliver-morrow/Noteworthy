@@ -2,10 +2,11 @@ import asyncio
 from enum import Enum, auto
 import websockets
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import requests
 import unittest
 from http import HTTPStatus
+from websockets.exceptions import ConnectionClosed
 
 # import logging
 # Enable logging
@@ -15,11 +16,11 @@ from http import HTTPStatus
 class Hosts(Enum):
     LOCAL_HTTP = "http://localhost:8080"
     LOCAL_WS = "ws://localhost:8081"
-    HOSTED_HTTP = "https://noteworthy.howdoesthiseven.work"
-    HOSTED_WS = "wss://nw-ws.howdoesthiseven.work"
 
 HOST_HTTP = Hosts.LOCAL_HTTP.value
 HOST_WS = Hosts.LOCAL_WS.value
+room_tokens = {}
+user_tokens = {}
 
 class EventObjectType(Enum):
     ROOM = 0
@@ -113,7 +114,6 @@ class Page(SendableObject):
 @dataclass
 class Room(SendableObject):
     owner_id: str
-    password: str = field(default="")
 
     class RoomEventType(Enum):
         CREATE = 0
@@ -130,7 +130,6 @@ class Room(SendableObject):
         event['event_type'] = self.RoomEventType.CREATE.value
         self.addMetaInformation(event)
         event['owner_id'] = self.owner_id
-        event['password'] = self.password
         return json.dumps(event)
 
     def createDeleteEvent(self) -> str:
@@ -192,64 +191,52 @@ class User(SendableObject):
         return json.dumps(event)
 
 def createRoom(owner_id: str) -> requests.Response:
-    response: requests.Response = requests.post(f"{HOST_HTTP}/v1/rooms?username={owner_id}")
+    response = requests.post(f"{HOST_HTTP}/v1/rooms", params={"username": owner_id}, timeout=3)
+    if response.status_code == HTTPStatus.CREATED:
+        data = response.json()
+        room_tokens[data["room_id"]] = data["session_token"]
+        user_tokens[data["room_id"], owner_id] = data["session_token"]
     return response
+
 
 def createUserConnection(username: str, room_id: str, password: str = "") -> requests.Response:
-    headers = {}
-    if password != "":
-        headers = {
-            "Authorization": f"Bearer {password}"
-        }
-    response: requests.Response = requests.post(
-        f"{HOST_HTTP}/v1/rooms/{room_id}/users?username={username}", 
-        headers = headers
-    )
+    headers = {"Authorization": f"Bearer {password}"} if password else {}
+    response = requests.post(f"{HOST_HTTP}/v1/rooms/{room_id}/users", params={"username": username},
+                             headers=headers, timeout=3)
+    if response.status_code == HTTPStatus.CREATED:
+        user_tokens[room_id, username] = response.json()["session_token"]
     return response
 
-def getRoomState(room_id: str, password: str = "") -> requests.Response:
-    headers = {}
-    if password != "":
-        headers = {
-            "Authorization": f"Bearer {password}"
-        }
-    response: requests.Response = requests.get(
-        f"{HOST_HTTP}/v1/rooms/{room_id}", 
-        headers = headers
-    )
-    return response
+
+def getRoomState(room_id: str) -> requests.Response:
+    token = room_tokens.get(room_id)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    return requests.get(f"{HOST_HTTP}/v1/rooms/{room_id}", headers=headers, timeout=3)
+
+
+def connectToRoom(username: str, room_id: str):
+    protocols = ["echo-protocol"]
+    if token := user_tokens.get((room_id, username)):
+        protocols.append(f"nw-session.{token}")
+    return websockets.connect(f"{HOST_WS}?room_id={room_id}", subprotocols=protocols)
+
 
 async def sendEventsToRoom(username: str, room_id: str, events: list[str]):
-    uri = f"{HOST_WS}?username={username}&room_id={room_id}"
-    try:
-        async with websockets.connect(uri, subprotocols=[websockets.Subprotocol("echo-protocol")]) as websocket:
-            for event in events:
-                await websocket.send(event)
+    async with connectToRoom(username, room_id) as websocket:
+        for event in events:
+            await websocket.send(event)
+        try:
+            await asyncio.wait_for(websocket.recv(), timeout=0.05)
+        except asyncio.TimeoutError:
+            pass
+        return True
 
-            # Wait for response with a timeout
-            response = await asyncio.wait_for(websocket.recv(), timeout=0.05)
-            print("Response received:", response)
-    # we want it to throw these errors
-    # except websockets.exceptions.ConnectionClosed as e:
-    #     print("Connection was closed unexpectedly:", e)
-    except asyncio.TimeoutError:
-        # this is ok
-        return True
-    
+
 async def runFunctionWhileConnected(username: str, room_id: str, function):
-    uri = f"{HOST_WS}?username={username}&room_id={room_id}"
-    try:
-        async with websockets.connect(uri, subprotocols=[websockets.Subprotocol("echo-protocol")]) as websocket:
-            function()
-            response = await asyncio.wait_for(websocket.recv(), timeout=0.05)
-            print("Response received:", response)
-    # we want it to throw these errors
-    # except websockets.exceptions.ConnectionClosed as e:
-    #     print("Connection was closed unexpectedly:", e)
-    except asyncio.TimeoutError:
-        # this is ok
+    async with connectToRoom(username, room_id):
+        function()
         return True
-        
+
 
 class RoomTests(unittest.TestCase):
 
@@ -262,7 +249,7 @@ class RoomTests(unittest.TestCase):
         username = "david"
         response: requests.Response = createRoom(username)
         self.assertEqual(response.status_code, HTTPStatus.CREATED)
-        room_id = response.text
+        room_id = response.json()["room_id"]
         
         response: requests.Response = getRoomState(room_id)
         self.assertEqual(response.status_code, HTTPStatus.OK)
@@ -273,7 +260,6 @@ class RoomTests(unittest.TestCase):
                 "event_type": 0,
                 "object_type": 0,
                 "owner_id": username,
-                "password": "",
                 "room_id": room_id
             }
             , room_event[0])
@@ -289,55 +275,48 @@ class RoomTests(unittest.TestCase):
             , room_event[1])
         
     def test_get_fake_room(self):
-        # 0 is not a valid room character so this room will never exist
         response: requests.Response = getRoomState("00000")
         self.assertEqual(response.status_code, HTTPStatus.NOT_FOUND)
 
     def test_connect_to_room(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         self.assertTrue(asyncio.run(sendEventsToRoom(username, room_id, [])))
 
     def test_connect_with_fake_user(self):
         username = "david"
-        room_id = createRoom(username).text
-        try:
+        room_id = createRoom(username).json()["room_id"]
+        with self.assertRaises(ConnectionClosed):
             asyncio.run(sendEventsToRoom("fake", room_id, []))
-        except websockets.exceptions.ConnectionClosedOK as e:
-            if e.rcvd is not None:
-                self.assertEqual(e.rcvd.reason, "user not in room")
 
     def test_connect_fake_room(self):
-        try:
+        with self.assertRaises(ConnectionClosed):
             asyncio.run(sendEventsToRoom("fake", "00000", []))
-        except websockets.exceptions.ConnectionClosedOK as e:
-            if e.rcvd is not None:
-                self.assertEqual(e.rcvd.reason, "room doesn't exist")
 
     def test_creating_user(self):
-        room_id = createRoom("david").text
+        room_id = createRoom("david").json()["room_id"]
         
         username = "user"
         response: requests.Response = createUserConnection(username, room_id)
         self.assertEqual(response.status_code, HTTPStatus.CREATED)
 
-    def test_resuming_user(self):
-        room_id = createRoom("david").text
+    def test_reserved_username_conflicts(self):
+        room_id = createRoom("david").json()["room_id"]
         
         username = "user"
         createUserConnection(username, room_id)
         response: requests.Response = createUserConnection(username, room_id)
-        self.assertEqual(response.status_code, HTTPStatus.OK)
+        self.assertEqual(response.status_code, HTTPStatus.CONFLICT)
 
     def test_connecting_with_created_user(self):
-        room_id = createRoom("david").text
+        room_id = createRoom("david").json()["room_id"]
         
         username = "user"
         createUserConnection(username, room_id)
         self.assertTrue(asyncio.run(sendEventsToRoom(username, room_id, [])))
 
     def test_user_already_connected(self):
-        room_id = createRoom("david").text
+        room_id = createRoom("david").json()["room_id"]
         
         username = "user"
         createUserConnection(username, room_id)
@@ -353,45 +332,45 @@ class RoomTests(unittest.TestCase):
         
     def test_change_password(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         new_password = "wow"
         asyncio.run(sendEventsToRoom(username, room_id, [
             Room(room_id, username).createChangePasswordEvent(new_password)
         ]))
-        room_json = getRoomState(room_id, new_password).json()
+        self.assertEqual(createUserConnection("guest", room_id, new_password).status_code, HTTPStatus.CREATED)
+        room_json = getRoomState(room_id).json()
         self.assertDictEqual({
                 "event_type": 0,
                 "object_type": 0,
                 "owner_id": username,
-                "password": new_password,
                 "room_id": room_id
             },room_json[0]
         )
 
     def test_connect_no_password_with_password(self):
         username = "david"
-        room_id = createRoom(username).text
-        response: requests.Response = getRoomState(room_id, "sdfijdsfdsfjk")
-        self.assertEqual(response.status_code, HTTPStatus.OK)
+        room_id = createRoom(username).json()["room_id"]
+        response = createUserConnection("guest", room_id, "optional")
+        self.assertEqual(response.status_code, HTTPStatus.CREATED)
 
     def test_connect_without_password_locked(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         new_password = "wow"
         asyncio.run(sendEventsToRoom(username, room_id, [
             Room(room_id, username).createChangePasswordEvent(new_password)
         ]))
-        response: requests.Response = getRoomState(room_id)
+        response = createUserConnection("guest", room_id)
         self.assertEqual(response.status_code, HTTPStatus.LOCKED)
 
     def test_connect_wrong_password(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         new_password = "wow"
         asyncio.run(sendEventsToRoom(username, room_id, [
             Room(room_id, username).createChangePasswordEvent(new_password)
         ]))
-        response: requests.Response = getRoomState(room_id, "eefasf")
+        response = createUserConnection("guest", room_id, "incorrect")
         self.assertEqual(response.status_code, HTTPStatus.FORBIDDEN)
 
     # missing tests about password stuff
@@ -400,7 +379,7 @@ class PageTests(unittest.TestCase):
 
     def test_create_page(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         page = Page(room_id, 10)
         asyncio.run(sendEventsToRoom(username, room_id, [
             page.createInsertPageEvent(previous_page_id=0)
@@ -408,6 +387,7 @@ class PageTests(unittest.TestCase):
         room_json = getRoomState(room_id).json()
         self.assertDictEqual({
                 "event_type": Page.PageEventType.INSERT.value,
+                "base64_image": "",
                 "object_type": EventObjectType.PAGE.value,
                 "room_id": page.room_id,
                 "page_id": page.page_id,
@@ -417,7 +397,7 @@ class PageTests(unittest.TestCase):
 
     def test_create_page_after_page(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         page = Page(room_id, 2)
         asyncio.run(sendEventsToRoom(username, room_id, [
             Page(room_id, 1).createInsertPageEvent(previous_page_id=0),
@@ -426,6 +406,7 @@ class PageTests(unittest.TestCase):
         room_json = getRoomState(room_id).json()
         self.assertDictEqual({
                 "event_type": Page.PageEventType.INSERT.value,
+                "base64_image": "",
                 "object_type": EventObjectType.PAGE.value,
                 "room_id": page.room_id,
                 "page_id": page.page_id,
@@ -435,7 +416,7 @@ class PageTests(unittest.TestCase):
 
     def test_create_page_at_beginning(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         page = Page(room_id, 20)
         asyncio.run(sendEventsToRoom(username, room_id, [
             Page(room_id, 10).createInsertPageEvent(previous_page_id=0),
@@ -444,6 +425,7 @@ class PageTests(unittest.TestCase):
         room_json = getRoomState(room_id).json()
         self.assertDictEqual({
                 "event_type": Page.PageEventType.INSERT.value,
+                "base64_image": "",
                 "object_type": EventObjectType.PAGE.value,
                 "room_id": page.room_id,
                 "page_id": page.page_id,
@@ -453,7 +435,7 @@ class PageTests(unittest.TestCase):
 
     def test_create_page_between(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         page = Page(room_id, 15)
         asyncio.run(sendEventsToRoom(username, room_id, [
             Page(room_id, 10).createInsertPageEvent(previous_page_id=0),
@@ -463,6 +445,7 @@ class PageTests(unittest.TestCase):
         room_json = getRoomState(room_id).json()
         self.assertDictEqual({
                 "event_type": Page.PageEventType.INSERT.value,
+                "base64_image": "",
                 "object_type": EventObjectType.PAGE.value,
                 "room_id": page.room_id,
                 "page_id": page.page_id,
@@ -472,7 +455,7 @@ class PageTests(unittest.TestCase):
 
     def test_delete_page(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         page = Page(room_id, 1234)
         asyncio.run(sendEventsToRoom(username, room_id, [
             page.createInsertPageEvent(previous_page_id=0),
@@ -483,7 +466,7 @@ class PageTests(unittest.TestCase):
 
     def test_delete_page_before_page(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         page = Page(room_id, 1234)
         not_deleted_page = Page(room_id, 2345)
         asyncio.run(sendEventsToRoom(username, room_id, [
@@ -494,6 +477,7 @@ class PageTests(unittest.TestCase):
         room_json = getRoomState(room_id).json()
         self.assertDictEqual({
                 "event_type": Page.PageEventType.INSERT.value,
+                "base64_image": "",
                 "object_type": EventObjectType.PAGE.value,
                 "room_id": not_deleted_page.room_id,
                 "page_id": not_deleted_page.page_id,
@@ -503,7 +487,7 @@ class PageTests(unittest.TestCase):
 
     def test_delete_page_between_page(self):
         username = "david"
-        room_id = createRoom(username).text
+        room_id = createRoom(username).json()["room_id"]
         page1 = Page(room_id, 1)
         page2 = Page(room_id, 2)
         page3 = Page(room_id, 3)
@@ -516,6 +500,7 @@ class PageTests(unittest.TestCase):
         room_json = getRoomState(room_id).json()
         self.assertDictEqual({
                 "event_type": Page.PageEventType.INSERT.value,
+                "base64_image": "",
                 "object_type": EventObjectType.PAGE.value,
                 "room_id": page3.room_id,
                 "page_id": page3.page_id,
@@ -524,6 +509,7 @@ class PageTests(unittest.TestCase):
         )
         self.assertDictEqual({
                 "event_type": Page.PageEventType.INSERT.value,
+                "base64_image": "",
                 "object_type": EventObjectType.PAGE.value,
                 "room_id": page1.room_id,
                 "page_id": page1.page_id,
@@ -543,4 +529,4 @@ def suite():
 # Running the test suite
 if __name__ == '__main__':
     runner = unittest.TextTestRunner(verbosity=2)
-    runner.run(suite())
+    raise SystemExit(not runner.run(suite()).wasSuccessful())

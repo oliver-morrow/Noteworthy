@@ -618,8 +618,10 @@ void clearLayout(QVBoxLayout* layout)
         delete item;
     }
 }
-void drawingRoom::initialize(std::string initial_room)
+void drawingRoom::initialize(const std::string& initial_room, const std::string& token)
 {
+    session_token = token;
+    ui->PasswordEdit->clear();
     ui->graphics->setScene(&no_page_scene);
     ui->graphics->user_id = user_id;
     ui->graphics->resetTransform();
@@ -636,7 +638,7 @@ void drawingRoom::initialize(std::string initial_room)
         ui->graphics->ws_handler.handleEvent(event);
     }
 
-    emit ui->graphics->ws_handler.startConnection(user_id, state.room_id);
+    emit ui->graphics->ws_handler.startConnection(user_id, state.room_id, session_token);
     ui->code->setText(QString::fromStdString(state.room_id));
     setNameLabel(QString::fromStdString(state.owner_id + "'s Room"));
 
@@ -657,21 +659,7 @@ void drawingRoom::initialize(std::string initial_room)
         ui->userKickLabel->hide();
     }
 
-    if (state.room_id == "12345") {
-        if (user_id == state.owner_id) {
-            ui->setting1->show();
-            ui->setting2->show();
-            ui->setting3->show();
-        } else {
-            ui->setting1->hide();
-            ui->setting2->hide();
-            ui->setting3->hide();
-        }
-    } else {
-        ui->setting1->show();
-        ui->setting2->show();
-        ui->setting3->show();
-    }
+    ui->setting2->setVisible(NW_ENABLE_PDF);
 
     // go to the page view
     on_pages_clicked();
@@ -694,7 +682,7 @@ void drawingRoom::select_page(uint64_t page_id)
         [&page_id](const auto& pair) { return pair.first == page_id; });
 
     if (it == thumbnailList.end()) {
-        navigator->goToRoomPageJoin(state.room_id, ui->graphics->user_id, state.password);
+        navigator->goToRoomPageJoin(state.room_id, ui->graphics->user_id);
         return;
     }
 
@@ -1136,7 +1124,7 @@ void drawingRoom::on_setting3_clicked()
 void drawingRoom::on_setting2_clicked()
 {
 #ifdef __EMSCRIPTEN__ // if its webassembly
-    open_file_and_process(state.room_id.c_str(), std::to_string(ui->graphics->current_page_id).c_str(), NW_HTTP.c_str(), state.password.c_str());
+    open_file_and_process(state.room_id.c_str(), std::to_string(ui->graphics->current_page_id).c_str(), NW_HTTP.c_str(), session_token.c_str());
 #endif
 
     qDebug() << "function jover";
@@ -1191,6 +1179,7 @@ void drawingRoom::on_PasswordSetButton_clicked()
 {
     nlohmann::json event;
     state.createChangePasswordEvent(event, ui->PasswordEdit->text().toStdString());
+    ui->PasswordEdit->clear();
     ui->graphics->ws_handler.handleEvent(event);
     ui->graphics->ws_handler.sendEvent(event);
 }

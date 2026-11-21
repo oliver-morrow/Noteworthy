@@ -147,12 +147,10 @@ private:
 class RoomState : public SendableObject {
 public:
     std::string owner_id;
-    std::string password;
 
-    RoomState(std::string room_id, std::string owner_id, std::string password)
+    RoomState(std::string room_id, std::string owner_id)
         : SendableObject(room_id)
         , owner_id(owner_id)
-        , password(password)
     {
         auto owner_connection = std::make_unique<User>(room_id, owner_id);
         addUser(std::move(owner_connection));
@@ -183,7 +181,6 @@ public:
     {
         addMetaInformation(json);
         json["owner_id"] = owner_id;
-        json["password"] = password;
         json["object_type"] = ROOM;
     }
 
@@ -191,7 +188,6 @@ public:
     {
         retrieveMetaInformation(json);
         json.at("owner_id").get_to(owner_id);
-        json.at("password").get_to(password);
     }
 
     void toJsonEventList(nlohmann::json& json)
@@ -267,12 +263,6 @@ public:
         json["new_password"] = new_password;
     }
 
-    void applyChangePasswordEvent(const nlohmann::json& json)
-    {
-        std::string new_password = json.at("new_password");
-        password = new_password;
-    }
-
     void createPromoteUserEvent(nlohmann::json& json, std::string username)
     {
         addMetaInformation(json);
@@ -299,10 +289,8 @@ public:
             throw std::runtime_error("shouldn't delete room from roomState");
             break;
         }
-        case RoomEventType::CHANGE_PASSWORD: {
-            applyChangePasswordEvent(json);
+        case RoomEventType::CHANGE_PASSWORD:
             break;
-        }
         case RoomEventType::PROMOTE_USER: {
             applyPromoteUserEvent(json);
             break;

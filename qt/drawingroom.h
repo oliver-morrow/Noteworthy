@@ -36,7 +36,7 @@ public:
     std::list<std::pair<uint64_t, std::shared_ptr<ClickableGraphicsView>>> thumbnailList;
     std::shared_ptr<ClickableGraphicsView> createThumbnail(std::shared_ptr<QGraphicsScene> scene);
 
-    void initialize(std::string initial_room = "[]");
+    void initialize(const std::string& initial_room, const std::string& token);
 
     void handleCreatePageUIChange(uint64_t page_id);
 
@@ -121,6 +121,7 @@ private slots:
 
 private:
     Ui::drawingRoom *ui;
+    std::string session_token;
     int lastWidth = 0;
     QTimer *collapseCooldownTimer;
     void showErrorMessage(const QString &message);

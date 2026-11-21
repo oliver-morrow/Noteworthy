@@ -13,6 +13,7 @@
 #include <libwebsockets.h>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -77,6 +78,34 @@ std::string extract_query_parameter(struct lws* connection, const std::string& q
     return decoded_str;
 }
 
+std::string websocketSession(struct lws* connection)
+{
+    char header[192];
+    const int size = lws_hdr_copy(connection, header, sizeof(header), WSI_TOKEN_PROTOCOL);
+    if (size <= 0) {
+        return "";
+    }
+    std::string_view protocols(header, size);
+    constexpr std::string_view prefix = "nw-session.";
+    while (!protocols.empty()) {
+        const auto separator = protocols.find(',');
+        auto protocol = protocols.substr(0, separator);
+        const auto start = protocol.find_first_not_of(" \t");
+        if (start != std::string_view::npos) {
+            protocol.remove_prefix(start);
+            protocol = protocol.substr(0, protocol.find_last_not_of(" \t") + 1);
+        }
+        if (protocol.substr(0, prefix.size()) == prefix) {
+            return std::string(protocol.substr(prefix.size()));
+        }
+        if (separator == std::string_view::npos) {
+            break;
+        }
+        protocols.remove_prefix(separator + 1);
+    }
+    return "";
+}
+
 // Sets a close reason; the caller must then return -1 from the callback.
 int reject_connection(struct lws* connection, const std::string& message)
 {
@@ -105,44 +134,31 @@ std::unique_ptr<CanvasObject> createCanvasObject(EventObjectType object_type)
 // message, or an empty string on success.
 std::string attachConnection(struct lws* connection, User** user_ptr_ptr)
 {
-    std::string username;
     std::string room_id;
     try {
-        username = extract_query_parameter(connection, "username=");
         room_id = extract_query_parameter(connection, "room_id=");
     } catch (const std::exception& e) {
-        return "missing username and/or room_id param";
-    }
-
-    if (!isValidUsername(username)) {
-        return "invalid username";
-    }
-    if (room_id.empty()) {
         return "missing room_id";
     }
 
+    const auto token = websocketSession(connection);
     std::string error;
     try {
         state.manipulateRoom(room_id, [&](RoomState& room) {
-            if (!room.isUserInRoom(username)) {
-                error = "user not in room";
+            auto* room_user = room.userForSession(token);
+            if (!room_user) {
+                error = "invalid room session";
                 return;
             }
-            if (room.isUserKicked(username)) {
-                error = "user was kicked";
-                return;
-            }
-            if (room.isUserConnectedToRoom(username)) {
+            if (room_user->is_connected) {
                 error = "user already connected";
                 return;
             }
 
-            User* room_user = room.getUserPtr(username);
             room_user->socket = connection;
             room_user->is_connected = true;
             room_user->rate_tokens = -1;
 
-            delete *user_ptr_ptr; // the temporary placeholder user
             *user_ptr_ptr = room_user;
 
             json event;
@@ -162,11 +178,6 @@ void detachConnection(User** user_ptr_ptr)
     }
     User* user = *user_ptr_ptr;
     *user_ptr_ptr = nullptr;
-
-    if (user->room_id.empty()) { // temporary placeholder user
-        delete user;
-        return;
-    }
 
     try {
         state.manipulateRoom(user->room_id, [&](RoomState& room) {
@@ -253,7 +264,7 @@ int WebSocketHandler::callbackEcho(
     try {
         switch (reason) {
         case LWS_CALLBACK_ESTABLISHED: {
-            *user_ptr_ptr = new User { "", "" }; // placeholder until attached
+            *user_ptr_ptr = nullptr;
             std::string error = attachConnection(connection, user_ptr_ptr);
             if (!error.empty()) {
                 return reject_connection(connection, error);
@@ -345,7 +356,7 @@ void WebSocketHandler::handleEvent(User& sender, const std::string& message)
                     throw std::runtime_error("password too long");
                 }
                 room.password = new_password;
-                break;
+                return;
             }
             case RoomState::RoomEventType::PROMOTE_USER: {
                 std::string username = event.at("username").get<std::string>();
