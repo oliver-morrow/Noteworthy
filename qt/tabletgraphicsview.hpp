@@ -37,6 +37,8 @@ public:
 
         this->pen = QColor{255, 50, 50};
 
+        connect(&ws_handler, &ClientWebSocketHandler::canvasObjectChanged, this,
+            [this](uint64_t page) { selection.refresh(page); });
         this->show();
     };
 
@@ -45,7 +47,10 @@ public:
 
     void displayScene(std::shared_ptr<QGraphicsScene> scene)
     {
-        this->setScene(scene.get());
+        if (this->scene() != scene.get()) {
+            selection.clear();
+            this->setScene(scene.get());
+        }
     }
 
     QPointF centerPoint;

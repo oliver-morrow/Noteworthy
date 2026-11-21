@@ -22,16 +22,8 @@ public:
 
     uint64_t getObjectIdFromGraphicsItem(QGraphicsItem* item)
     {
-        if (pointer_to_id_map.count(item) == 0) {
-            return -1;
-        }
-
-               // selecting anything other than stroke is broken
-        // if (object_map.at(pointer_to_id_map.at(item))->getObjectType() != STROKE) {
-        //     return -1;
-        // }
-
-        return pointer_to_id_map.at(item);
+        const auto found = pointer_to_id_map.find(item);
+        return found == pointer_to_id_map.end() ? uint64_t(-1) : found->second;
     }
 #endif
     enum PageEventType {
@@ -89,6 +81,9 @@ public:
             return nullptr;
         }
         std::unique_ptr<CanvasObject> object = std::move(object_map.at(id));
+#ifdef NOTEWORTHY_QT
+        pointer_to_id_map.erase(object->item);
+#endif
         object_map.erase(id);
         return object;
     }

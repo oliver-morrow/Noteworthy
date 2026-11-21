@@ -120,6 +120,9 @@ private slots:
     void on_PasswordSetButton_clicked();
 
 private:
+    template <typename Object>
+    void insertSvgObject(Object& object, const QString& path);
+
     Ui::drawingRoom *ui;
     std::string session_token;
     int lastWidth = 0;

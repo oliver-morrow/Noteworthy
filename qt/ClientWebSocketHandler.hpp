@@ -25,6 +25,7 @@ signals:
     void pageDeleted(uint64_t page_id);
     void startConnection(std::string username, std::string room_id, std::string session_token);
     void usersUpdated();
+    void canvasObjectChanged(uint64_t page_id);
 
 private Q_SLOTS:
     void openConnection(std::string username, std::string room_id, std::string session_token);

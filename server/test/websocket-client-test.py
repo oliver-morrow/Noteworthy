@@ -519,9 +519,54 @@ class PageTests(unittest.TestCase):
 
     
 
+
+class CanvasObjectTests(unittest.TestCase):
+    def test_svg_moves_are_saved_in_room_state(self):
+        for object_type, type_field in [
+            (EventObjectType.SHAPE, "shape_type"),
+            (EventObjectType.SYMBOL, "symbol_type"),
+        ]:
+            with self.subTest(object_type=object_type):
+                owner = "canvas-owner"
+                room_id = createRoom(owner).json()["room_id"]
+                page = Page(room_id, 10)
+                metadata = {
+                    "room_id": room_id,
+                    "page_id": page.page_id,
+                    "object_id": 1,
+                    "owner_id": owner,
+                    "object_type": object_type.value,
+                }
+                create = {
+                    **metadata,
+                    "event_type": CanvasObject.CanvasObjectEventType.CREATE.value,
+                    type_field: 0,
+                    "top_left": [20, 30],
+                    "bottom_left": [20, 70],
+                    "bottom_right": [60, 70],
+                }
+                move = {
+                    **metadata,
+                    "event_type": CanvasObject.CanvasObjectEventType.MOVE.value,
+                    "distance_x": 100,
+                    "distance_y": -10,
+                }
+                asyncio.run(sendEventsToRoom(owner, room_id, [
+                    page.createInsertPageEvent(previous_page_id=0),
+                    json.dumps(create),
+                    json.dumps(move),
+                ]))
+                events = getRoomState(room_id).json()
+                saved = next(event for event in events if event["object_type"] == object_type.value)
+                self.assertEqual(saved["top_left"], [120, 20])
+                self.assertEqual(saved["bottom_left"], [120, 60])
+                self.assertEqual(saved["bottom_right"], [160, 60])
+
+
 def suite():
     suite = unittest.TestSuite()
     loader = unittest.TestLoader()
+    suite.addTests(loader.loadTestsFromTestCase(CanvasObjectTests))
     suite.addTests(loader.loadTestsFromTestCase(PageTests))
     suite.addTests(loader.loadTestsFromTestCase(RoomTests))
     return suite

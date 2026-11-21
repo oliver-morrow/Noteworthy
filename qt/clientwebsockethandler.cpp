@@ -80,6 +80,11 @@ void ClientWebSocketHandler::onTextMessageReceived(QString message)
     try {
         nlohmann::json event = nlohmann::json::parse(message.toStdString());
         handleEvent(event);
+        const auto objectType = event.value("object_type", -1);
+        if (event["room_id"] == state.room_id
+            && (objectType == STROKE || objectType == SHAPE || objectType == SYMBOL)) {
+            emit canvasObjectChanged(event.at("page_id").get<uint64_t>());
+        }
     } catch (...) {
         qDebug() << "error handling!!!!";
     }
@@ -292,16 +297,9 @@ void ClientWebSocketHandler::handleEvent(const nlohmann::json& event)
         case CanvasObject::CanvasObjectEventType::DELETE: {
             uint64_t object_id = event["object_id"];
             state.manipulatePage(event["page_id"], [object_id](Page& page) {
-                page.manipulateObject(object_id, [](CanvasObject& object) {
-                    QGraphicsScene* scene = object.item->scene();
-                    if (scene) {
-                        scene->removeItem(object.item);
-                    }
-
-                    delete object.item;
-                    object.item = nullptr;
-                });
-                page.deleteObject(object_id);
+                if (auto object = page.deleteObject(object_id)) {
+                    delete object->item;
+                }
             });
             break;
         }
