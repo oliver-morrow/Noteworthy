@@ -1,0 +1,90 @@
+name: Build and release Noteworthy
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: noteworthy-${{ github.event_name == 'workflow_dispatch' && 'production' || github.ref }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Build production images
+        run: docker compose -f server/compose.yaml --profile local build
+
+      - name: Check the images and run the server tests
+        run: |
+          docker compose -f server/compose.yaml --profile local up -d --no-build
+          for attempt in {1..30}; do
+            if curl -fsSI http://localhost:8084/noteworthy-qt.wasm | grep -qi '^content-type: application/wasm'; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsSI http://localhost:8084/noteworthy-qt.wasm | grep -qi '^content-type: application/wasm'
+          python3 -m venv "$RUNNER_TEMP/noteworthy-tests"
+          "$RUNNER_TEMP/noteworthy-tests/bin/pip" install -r server/test/requirements.txt
+          "$RUNNER_TEMP/noteworthy-tests/bin/python" server/test/websocket-client-test.py
+          "$RUNNER_TEMP/noteworthy-tests/bin/python" server/test/security-regression-test.py
+
+      - name: Package release images
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag noteworthy-server:local "noteworthy-server:$GITHUB_SHA"
+          docker tag noteworthy-qt:local "noteworthy-qt:$GITHUB_SHA"
+          mkdir -p "$RUNNER_TEMP/noteworthy-release"
+          cd "$RUNNER_TEMP/noteworthy-release"
+          docker save "noteworthy-server:$GITHUB_SHA" "noteworthy-qt:$GITHUB_SHA" | gzip -1 > images.tar.gz
+          sha256sum images.tar.gz > images.tar.gz.sha256
+
+      - name: Pass verified images to the release job
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: noteworthy-images
+          path: ${{ runner.temp }}/noteworthy-release/
+          compression-level: 0
+          retention-days: 1
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified images
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: noteworthy-images
+
+      - name: Publish release images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="noteworthy-production-$GITHUB_SHA"
+          if gh release view "$tag" --json isDraft -q '.isDraft' | grep -qx false; then
+            exit 0
+          fi
+          sha256sum -c images.tar.gz.sha256
+          gh release create "$tag" images.tar.gz images.tar.gz.sha256 \
+            --target "$GITHUB_SHA" --latest \
+            --title "Noteworthy production ${GITHUB_SHA:0:12}" \
+            --notes "Production container images built and tested by GitHub Actions."
