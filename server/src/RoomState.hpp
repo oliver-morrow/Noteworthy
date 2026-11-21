@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CanvasObject.hpp"
+#include <chrono>
 #include <cstdint>
 #include <list>
 #include <memory> // Include for smart pointers
@@ -92,6 +93,12 @@ public:
         return object_map.count(id) != 0;
     }
 
+    size_t objectCount()
+    {
+        std::lock_guard<std::mutex> lock(page_mutex);
+        return object_map.size();
+    }
+
     void addObject(std::unique_ptr<CanvasObject> object)
     {
         std::lock_guard<std::mutex> lock(page_mutex);
@@ -143,6 +150,7 @@ class RoomState : public SendableObject {
 public:
     std::string owner_id;
     std::string password;
+    std::chrono::steady_clock::time_point last_activity = std::chrono::steady_clock::now();
 
     RoomState(std::string room_id, std::string owner_id, std::string password)
         : SendableObject(room_id)
@@ -446,6 +454,22 @@ public:
         }
         return users.at(username)->is_kicked;
     }
+
+    bool hasConnectedUsers() const
+    {
+        for (auto const& [username, user] : users) {
+            if (user->is_connected) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    size_t userCount() const { return users.size(); }
+
+    size_t pageCount() const { return page_order.size(); }
+
+    bool hasPage(uint64_t id) const { return page_map.count(id) > 0; }
 
     bool isUserConnectedToRoom(const std::string& username) const
     {

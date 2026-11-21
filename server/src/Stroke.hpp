@@ -21,6 +21,8 @@ class Stroke : public CanvasObject {
   public:
     EventObjectType getObjectType() { return STROKE; };
 
+    size_t pointCount() const { return points.size(); }
+
     virtual void toJson(nlohmann::json &json) {
         addMetaInformation(json);
         json["points"] = points;

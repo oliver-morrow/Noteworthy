@@ -1,5 +1,7 @@
+#include "Config.hpp"
 #include "ServerState.hpp"
 #include "User.hpp"
+#include "WebSocketHandler.hpp"
 #include "base64.hpp"
 #include "fpdfview.h"
 #include <iostream>
@@ -8,11 +10,16 @@
 #include <pistache/http.h>
 #include <pistache/http_headers.h>
 #include <pistache/router.h>
-#include <regex>
+#include <algorithm>
+#include <cmath>
 #include <string>
 #define STB_IMAGE_WRITE_IMPLEMENTATION // Define the macro to enable implementation
 #include "stb_image_write.h"
 #include <fstream>
+#include <mutex>
+
+// PDFium is not thread-safe; every PDFium call goes through this lock.
+static std::mutex pdfium_mutex;
 
 using namespace Pistache;
 
@@ -22,19 +29,10 @@ public:
 
     void setupRoutes(Rest::Router& router)
     {
-        Rest::Routes::Post(router, "/v1/rooms",
-            Rest::Routes::bind(&RoomHandler::createRoom, this));
-
-        // Rest::Routes::Options(
-        //     router, "/v1/rooms/:id",
-        //     Rest::Routes::bind(&RoomHandler::handleOptionsRequest, this));
-        Rest::Routes::Get(router, "/v1/rooms/:room_id",
-
-            Rest::Routes::bind(&RoomHandler::getRoom, this));
-        Rest::Routes::Post(router, "/v1/rooms/:room_id/users",
-            Rest::Routes::bind(&RoomHandler::createUser, this));
-        Rest::Routes::Post(router, "/v1/rooms/:room_id/pdf_insert",
-            Rest::Routes::bind(&RoomHandler::insertPDFPages, this));
+        Rest::Routes::Post(router, "/v1/rooms", guarded(&RoomHandler::createRoom));
+        Rest::Routes::Get(router, "/v1/rooms/:room_id", guarded(&RoomHandler::getRoom));
+        Rest::Routes::Post(router, "/v1/rooms/:room_id/users", guarded(&RoomHandler::createUser));
+        Rest::Routes::Post(router, "/v1/rooms/:room_id/pdf_insert", guarded(&RoomHandler::insertPDFPages));
 
         // Default handler for invalid routes
         router.addCustomHandler(
@@ -42,38 +40,50 @@ public:
     }
 
 private:
+    using Handler = void (RoomHandler::*)(const Rest::Request&, Http::ResponseWriter&);
+
+    // Wraps a handler so exceptions become error responses instead of
+    // escaping into Pistache.
+    Rest::Route::Handler guarded(Handler handler)
+    {
+        return [this, handler](const Rest::Request& request, Http::ResponseWriter response) {
+            try {
+                (this->*handler)(request, response);
+            } catch (const std::range_error& e) { // room evicted mid-request
+                response.send(Http::Code::Not_Found, "Room not found");
+            } catch (const std::exception& e) {
+                std::cerr << "HTTP handler error: " << e.what() << std::endl;
+                response.send(Http::Code::Internal_Server_Error, "Internal error");
+            }
+            return Rest::Route::Result::Ok;
+        };
+    }
+
     void createRoom(const Rest::Request& request,
-        Http::ResponseWriter response)
+        Http::ResponseWriter& response)
     {
         auto username_query = request.query().get("username").value_or("");
 
-        if (username_query.empty()) {
+        if (!isValidUsername(username_query)) {
             response.send(Http::Code::Bad_Request,
-                "Username parameter is required");
+                "A username of 1-32 characters is required");
             return;
         }
 
-        // create a room with that user as owner
-        // with no password
-        std::string room_id = state.createRoom(username_query);
-        response.send(Http::Code::Created, room_id);
+        // create a room with that user as owner, with no password
+        try {
+            std::string room_id = state.createRoom(username_query, Config::get().max_rooms);
+            response.send(Http::Code::Created, room_id);
+        } catch (const ServerFullError& e) {
+            response.send(Http::Code::Service_Unavailable,
+                "The demo is at capacity. Try again later.");
+        }
     }
 
     void handleNotFound(const Rest::Request& request,
         Http::ResponseWriter response)
     {
-        std::cout << "handling fake request for route:" << std::endl;
-
-        auto method = request.method();
-        auto resource = request.resource();
-
-        if (resource.empty()) {
-            response.send(Http::Code::Bad_Request, "Invalid resource");
-            return;
-        }
-
-        std::cout << method << ": " << resource << std::endl;
-        response.send(Http::Code::Not_Found, "Invalid route!!");
+        response.send(Http::Code::Not_Found, "Invalid route");
     }
 
     // void handleOptionsRequest(const Rest::Request& request,
@@ -143,11 +153,9 @@ private:
         return true;
     }
 
-    void getRoom(const Rest::Request& request, Http::ResponseWriter response)
+    void getRoom(const Rest::Request& request, Http::ResponseWriter& response)
     {
-        // response.headers().add<Http::Header::AccessControlAllowOrigin>("*");
         auto room_id = request.param(":room_id").as<std::string>();
-        std::cout << "handling request for room id " << room_id << std::endl;
 
         if (!isAuthenticated(room_id, request, response)) {
             return;
@@ -162,9 +170,8 @@ private:
     }
 
     void createUser(const Rest::Request& request,
-        Http::ResponseWriter response)
+        Http::ResponseWriter& response)
     {
-        std::cout << "handling user add route" << std::endl;
         auto room_id = request.param(":room_id").as<std::string>();
         auto username_query = request.query().get("username").value_or("");
 
@@ -172,16 +179,17 @@ private:
             return;
         }
 
-        if (username_query.empty()) {
+        if (!isValidUsername(username_query)) {
             response.send(Http::Code::Bad_Request,
-                "Username parameter is required");
+                "A username of 1-32 characters is required");
             return;
         }
 
         std::string username = username_query;
+        const size_t max_users = Config::get().max_users_per_room;
 
         // Manipulate the room state to add a new user if the username is unique
-        state.manipulateRoom(room_id, [&room_id, &username, &response](RoomState& room) {
+        state.manipulateRoom(room_id, [&room_id, &username, &response, max_users](RoomState& room) {
             if (room.isUserConnectedToRoom(username)) {
                 response.send(Http::Code::Conflict,
                     "Username already connected in the room");
@@ -199,23 +207,17 @@ private:
                 return;
             }
 
+            if (room.userCount() >= max_users) {
+                response.send(Http::Code::Forbidden, "Room is full");
+                return;
+            }
+
             auto user = std::make_unique<User>(room_id, username);
             nlohmann::json event;
             user->createCreateEvent(event);
             room.addUser(std::move(user));
 
-            room.forEachUser([&](const User& room_user) {
-                if (!room_user.is_connected) {
-                    return;
-                }
-
-                if (room_user.is_connected && room_user.socket == nullptr) {
-                    return;
-                    throw "AAAA user is connected but their socket is null";
-                }
-
-                room_user.sendEvent(event.dump());
-            });
+            WebSocketHandler::queueBroadcast(room_id, event.dump());
 
             // Return success response
             response.send(Http::Code::Created, "User created successfully");
@@ -242,9 +244,14 @@ private:
     }
 
     void insertPDFPages(const Rest::Request& request,
-        Http::ResponseWriter response)
+        Http::ResponseWriter& response)
     {
-        std::cout << "handling pdf upload" << std::endl;
+        const auto& config = Config::get();
+        if (!config.enable_pdf) {
+            response.send(Http::Code::Not_Found, "PDF import is disabled on this server");
+            return;
+        }
+
         auto room_id = request.param(":room_id").as<std::string>();
         auto previous_page_id_query = request.query().get("previous_page_id").value_or("");
 
@@ -252,133 +259,131 @@ private:
             return;
         }
 
-        if (previous_page_id_query.empty()) {
-            response.send(Http::Code::Bad_Request,
-                "previous_page_id parameter is required");
-            return;
-        }
-
-        auto body = request.body();
-
-        auto thread_id = std::hash<std::thread::id> {}(std::this_thread::get_id());
         uint64_t previous_page_id;
         try {
             previous_page_id = std::stoull(previous_page_id_query);
-        } catch (std::invalid_argument e) {
-            response.send(Http::Code::Bad_Request,
-                "Invalid previous page id");
+        } catch (const std::exception& e) {
+            response.send(Http::Code::Bad_Request, "Invalid previous page id");
             return;
         }
 
-        // Save the body as a PDF file (assuming a single file upload)
-        std::string output_filename = std::string("uploaded_file") + std::to_string(thread_id) + ".pdf";
-        std::ofstream outFile(output_filename, std::ios::binary);
-        auto data = body.data();
-        outFile.write(body.data(), body.size());
-        outFile.close();
+        // Check the insert position before spending CPU on rendering.
+        bool position_ok = false;
+        size_t page_count = 0;
+        state.manipulateRoom(room_id, [&](RoomState& room) {
+            position_ok = previous_page_id == 0 || room.hasPage(previous_page_id);
+            page_count = room.pageCount();
+        });
+        if (!position_ok) {
+            response.send(Http::Code::Bad_Request, "previous page id not found");
+            return;
+        }
+        if (page_count >= config.max_pages_per_room) {
+            response.send(Http::Code::Forbidden, "Page limit reached");
+            return;
+        }
 
-        std::vector<std::string> base64_list = renderPDFtoBase64List(output_filename);
+        const std::string& body = request.body();
+        size_t pages_allowed = std::min(config.max_pdf_pages, config.max_pages_per_room - page_count);
+        std::vector<std::string> base64_list = renderPDFtoBase64List(body, pages_allowed);
 
         if (base64_list.empty()) {
-            response.send(Http::Code::Bad_Request,
-                "Empty pdf file");
+            response.send(Http::Code::Bad_Request, "Empty or unreadable pdf file");
             return;
         }
 
+        bool inserted = false;
         state.manipulateRoom(room_id, [&](RoomState& room) {
-            for (std::string base64 : base64_list) {
+            if (previous_page_id != 0 && !room.hasPage(previous_page_id)) {
+                return; // deleted while rendering
+            }
+            for (std::string& base64 : base64_list) {
                 auto page = std::make_unique<Page>();
                 page->room_id = room_id;
                 uint64_t new_id = IDGenerator::newID();
                 page->page_id = new_id;
-                page->base64_image = base64;
-
-                try {
-                    room.addPageAfter(previous_page_id, std::move(page));
-                } catch (std::runtime_error e) {
-                    response.send(Http::Code::Bad_Request,
-                        "previous page id not found");
-                    return;
-                }
-
+                page->base64_image = std::move(base64);
+                room.addPageAfter(previous_page_id, std::move(page));
                 previous_page_id = new_id;
             }
+            inserted = true;
 
             // make everyone reset their room
             nlohmann::json event;
             room.createResetEvent(event);
-
-            room.forEachUser([&](const User& user) {
-                if (!user.is_connected) {
-                    return;
-                }
-
-                if (user.is_connected && user.socket == nullptr) {
-                    return;
-                    throw "AAAA user is connected but their socket is null";
-                }
-
-                user.sendEvent(event.dump());
-            });
+            WebSocketHandler::queueBroadcast(room_id, event.dump());
         });
-        response.send(Http::Code::Created,
-            "successfully created");
+
+        if (!inserted) {
+            response.send(Http::Code::Bad_Request, "previous page id not found");
+            return;
+        }
+        response.send(Http::Code::Created, "successfully created");
     }
 
-    std::vector<std::string> renderPDFtoBase64List(std::string filename)
+    std::vector<std::string> renderPDFtoBase64List(const std::string& pdf_bytes, size_t max_pages)
     {
+        const size_t max_pixels = Config::get().max_pdf_page_pixels;
         std::vector<std::string> base64_list;
-        // Load a PDF document
-        FPDF_DOCUMENT pdfDocument = FPDF_LoadDocument(filename.c_str(), nullptr);
-        if (!pdfDocument) {
+
+        std::lock_guard<std::mutex> lock(pdfium_mutex);
+
+        // Parse straight from memory: no temp files on disk.
+        FPDF_DOCUMENT document = FPDF_LoadMemDocument64(pdf_bytes.data(), pdf_bytes.size(), nullptr);
+        if (!document) {
             return {};
         }
 
-        int pageCount = FPDF_GetPageCount(pdfDocument);
-        for (int pageIndex = 0; pageIndex < pageCount; ++pageIndex) {
-            FPDF_PAGE page = FPDF_LoadPage(pdfDocument, pageIndex);
+        int page_count = FPDF_GetPageCount(document);
+        for (int page_index = 0; page_index < page_count && base64_list.size() < max_pages; ++page_index) {
+            FPDF_PAGE page = FPDF_LoadPage(document, page_index);
             if (!page) {
-                std::cerr << "Failed to load page " << pageIndex << ".\n";
                 continue;
             }
 
-            // Get page dimensions
-            double width = FPDF_GetPageWidth(page);
-            double height = FPDF_GetPageHeight(page);
+            double page_width = FPDF_GetPageWidth(page);
+            double page_height = FPDF_GetPageHeight(page);
+            if (!(page_width >= 1 && page_height >= 1)) {
+                FPDF_ClosePage(page);
+                continue;
+            }
 
-            // Create a bitmap
-            FPDF_BITMAP bitmap = FPDFBitmap_Create(static_cast<int>(width), static_cast<int>(height), 0);
-            FPDFBitmap_FillRect(bitmap, 0, 0, static_cast<int>(width), static_cast<int>(height), 0xFFFFFFFF);
+            // Scale oversized pages down to the pixel budget.
+            double scale = 1.0;
+            double area = page_width * page_height;
+            if (area > static_cast<double>(max_pixels)) {
+                scale = std::sqrt(static_cast<double>(max_pixels) / area);
+            }
+            int width = std::max(1, static_cast<int>(page_width * scale));
+            int height = std::max(1, static_cast<int>(page_height * scale));
 
-            // Render the page into the bitmap
-            FPDF_RenderPageBitmap(bitmap, page, 0, 0, static_cast<int>(width), static_cast<int>(height), 0, 0);
+            FPDF_BITMAP bitmap = FPDFBitmap_Create(width, height, 0);
+            if (!bitmap) {
+                FPDF_ClosePage(page);
+                continue;
+            }
+            FPDFBitmap_FillRect(bitmap, 0, 0, width, height, 0xFFFFFFFF);
+            FPDF_RenderPageBitmap(bitmap, page, 0, 0, width, height, 0, 0);
 
-            // Save the bitmap as PNG and encode as Base64
             const uint8_t* buffer = static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap));
             int stride = FPDFBitmap_GetStride(bitmap);
 
-            // Check and swap BGRA to RGBA (if needed)
-            std::vector<uint8_t> imageData(buffer, buffer + stride * static_cast<int>(height));
-
-            // Iterate through the image data and swap the red and blue channels if the image is in BGRA
-            for (int i = 0; i < imageData.size(); i += 4) {
-                unsigned char blue = imageData[i];
-                unsigned char red = imageData[i + 2];
-
-                // Swap the red and blue channels
-                imageData[i] = red;
-                imageData[i + 2] = blue;
+            // PDFium renders BGRA; PNG wants RGBA.
+            std::vector<uint8_t> image_data(buffer, buffer + static_cast<size_t>(stride) * height);
+            for (size_t i = 0; i + 3 < image_data.size(); i += 4) {
+                std::swap(image_data[i], image_data[i + 2]);
             }
 
-            std::string base64Image = saveBitmapAsBase64(imageData.data(), static_cast<int>(width), static_cast<int>(height), stride);
+            std::string base64_image = saveBitmapAsBase64(image_data.data(), width, height, stride);
+            if (!base64_image.empty()) {
+                base64_list.push_back(std::move(base64_image));
+            }
 
-            // Output Base64 string
-            base64_list.push_back(base64Image);
-
-            // Clean up
             FPDFBitmap_Destroy(bitmap);
             FPDF_ClosePage(page);
         }
+
+        FPDF_CloseDocument(document);
         return base64_list;
     }
 };
@@ -396,7 +401,7 @@ void startServer(int port)
     auto options = Http::Endpoint::options().threads(5).maxRequestSize(10000000);
     server.init(options);
     server.setHandler(router.handler());
-    std::cout << "Server is running at http://localhost:8080" << std::endl;
+    std::cout << "HTTP server running on port " << port << std::endl;
     server.serve();
 
     server.shutdown();

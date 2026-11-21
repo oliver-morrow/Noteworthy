@@ -4,6 +4,7 @@
 #include "RoomState.hpp"
 #include "Shape.hpp"
 #include "Symbol.hpp"
+#include "hosts.hpp"
 #include "load_file.hpp"
 #include "ui_drawingroom.h"
 #include <QApplication>
@@ -304,6 +305,9 @@ drawingRoom::drawingRoom(QWidget* parent)
     QIcon icon32(":/png/png/upload_file.svg");
     ui->setting2->setIcon(icon32);
     ui->setting2->setIconSize(QSize(45, 45));
+#if !NW_ENABLE_PDF
+    ui->setting2->setVisible(false); // PDF import is disabled server-side
+#endif
 
     QIcon icon30(":/png/png/delete.svg");
     ui->setting3->setIcon(icon30);

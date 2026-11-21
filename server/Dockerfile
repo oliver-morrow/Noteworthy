@@ -1,5 +1,7 @@
-# Stage 2: Build the Application
-FROM ubuntu:latest
+# libpdfium.so in ./pdfium is x86-64 only, so both stages are pinned to amd64.
+
+# ---- build stage ----
+FROM --platform=linux/amd64 ubuntu:24.04 AS build
 
 RUN apt-get -y update && \
     apt-get install -y cmake git g++ libcurl4-openssl-dev pkg-config \
@@ -9,20 +11,31 @@ RUN apt-get -y update && \
     meson \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the source code
-# Add your source files here
 WORKDIR /usr/src
 COPY ./src ./src
 COPY ./pdfium ./pdfium
 COPY CMakeLists.txt CMakeLists.txt
 
-# Use DockerCMakeLists.txt for building
 RUN mkdir -p build && \
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
     cmake --build build --parallel $(nproc)
 
-# Expose port 8080
-EXPOSE 8080
+# ---- runtime stage: no compilers, non-root ----
+FROM --platform=linux/amd64 ubuntu:24.04
 
-# Run the application
-CMD ["/usr/src/build/api-server"]
+RUN apt-get -y update && \
+    apt-get install -y --no-install-recommends libwebsockets19t64 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --no-create-home --uid 10001 noteworthy
+
+COPY --from=build /usr/src/build/api-server /opt/noteworthy/api-server
+COPY --from=build /usr/src/external/lib/libpistache.so* /opt/noteworthy/lib/
+COPY --from=build /usr/src/pdfium/lib/libpdfium.so /opt/noteworthy/lib/
+ENV LD_LIBRARY_PATH=/opt/noteworthy/lib
+
+USER noteworthy
+# The binary is built with -pg and writes gmon.out to the working directory on exit.
+WORKDIR /tmp
+
+EXPOSE 8080 8081
+CMD ["/opt/noteworthy/api-server"]

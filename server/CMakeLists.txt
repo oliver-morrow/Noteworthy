@@ -15,6 +15,8 @@ set(EXTERNAL_INSTALL_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/external)
 # Define the ExternalProject for Pistache
 ExternalProject_Add(PISTACHE
     GIT_REPOSITORY https://github.com/pistacheio/pistache.git
+    # Pinned for reproducible builds (0.5.18, 2026-11-17). Bump deliberately.
+    GIT_TAG ddf06c2fab8d8efeb7b33561117b9de8e5e55f5c
     BUILD_IN_SOURCE true
     CMAKE_ARGS -DPISTACHE_BUILD_TESTS=OFF
     INSTALL_COMMAND meson setup build --prefix=${EXTERNAL_INSTALL_LOCATION} --libdir=lib && meson install -C build
