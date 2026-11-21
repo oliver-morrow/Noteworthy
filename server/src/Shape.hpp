@@ -50,6 +50,9 @@ public:
         json.at("top_left").get_to(top_left);
         json.at("bottom_left").get_to(bottom_left);
         json.at("bottom_right").get_to(bottom_right);
+        if (top_left.size() != 2 || bottom_left.size() != 2 || bottom_right.size() != 2) {
+            throw std::invalid_argument("SVG corners must be two-dimensional points");
+        }
         json.at("shape_type").get_to(shape_type);
 #ifdef NOTEWORTHY_QT
         updateQtScene();
@@ -58,11 +61,9 @@ public:
 
     virtual void applyMoveEvent(double distance_x, double distance_y)
     {
-        std::vector<std::vector<double>> points = {top_left, bottom_left, bottom_right};
-        for (auto &point : points)
-        {
-            point[0] += distance_x;
-            point[1] += distance_y;
+        for (auto* point : { &top_left, &bottom_left, &bottom_right }) {
+            (*point)[0] += distance_x;
+            (*point)[1] += distance_y;
         }
     }
 

@@ -4,7 +4,7 @@
 FROM --platform=linux/amd64 ubuntu:24.04 AS build
 
 RUN apt-get -y update && \
-    apt-get install -y cmake git g++ libcurl4-openssl-dev pkg-config \
+    apt-get install -y cmake git g++ libcurl4-openssl-dev libssl-dev pkg-config \
     build-essential \
     libwebsockets-dev \
     nlohmann-json3-dev \
@@ -24,7 +24,7 @@ RUN mkdir -p build && \
 FROM --platform=linux/amd64 ubuntu:24.04
 
 RUN apt-get -y update && \
-    apt-get install -y --no-install-recommends libwebsockets19t64 \
+    apt-get install -y --no-install-recommends libwebsockets19t64 libssl3t64 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --no-create-home --uid 10001 noteworthy
 

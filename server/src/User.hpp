@@ -20,6 +20,7 @@ public:
     bool is_kicked = false;
 #ifndef NOTEWORTHY_QT
     struct lws* socket = nullptr;
+    std::string session_token;
 
     // Per-user token bucket for incoming WebSocket messages.
     double rate_tokens = -1;

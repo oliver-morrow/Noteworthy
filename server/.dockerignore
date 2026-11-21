@@ -1,2 +1,4 @@
 build
 external
+cloudflare-tunnel-secret.env
+.noteworthy-release*

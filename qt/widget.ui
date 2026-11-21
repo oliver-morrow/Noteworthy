@@ -230,87 +230,24 @@ border-radius: 60px; </string>
               </spacer>
              </item>
              <item>
-              <widget class="QLineEdit" name="lineEdit_5">
+              <widget class="QLineEdit" name="roomCode">
+               <property name="minimumSize">
+                <size><width>260</width><height>80</height></size>
+               </property>
+               <property name="maximumSize">
+                <size><width>480</width><height>80</height></size>
+               </property>
                <property name="styleSheet">
-                <string notr="true">
-    border-radius: 50px;    /* Make the area circular */
-    background-color: white; /* Optional: Set background color */
- width: 127px;          /* Set the width of the circular area */
-    height: 136px;         /* Set the height of the circular area */
-    color: #757397;         /* Set text color to purple */
-    text-align: center;    /* Center the text */
-  font-size: 120px;      /* Set the font size */</string>
+                <string notr="true">border-radius: 24px; background-color: white; color: #393752; font-size: 32px;</string>
                </property>
                <property name="alignment">
                 <set>Qt::AlignmentFlag::AlignCenter</set>
                </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLineEdit" name="lineEdit_6">
-               <property name="styleSheet">
-                <string notr="true">
-    border-radius: 50px;    /* Make the area circular */
-    background-color: white; /* Optional: Set background color */
- width: 127px;          /* Set the width of the circular area */
-    height: 136px;         /* Set the height of the circular area */
-    color: #757397;         /* Set text color to purple */
-    text-align: center;    /* Center the text */
-  font-size: 120px;      /* Set the font size */</string>
+               <property name="placeholderText">
+                <string>Room code</string>
                </property>
-               <property name="alignment">
-                <set>Qt::AlignmentFlag::AlignCenter</set>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLineEdit" name="lineEdit_7">
-               <property name="styleSheet">
-                <string notr="true">
-    border-radius: 50px;    /* Make the area circular */
-    background-color: white; /* Optional: Set background color */
- width: 127px;          /* Set the width of the circular area */
-    height: 136px;         /* Set the height of the circular area */
-    color: #757397;         /* Set text color to purple */
-    text-align: center;    /* Center the text */
-  font-size: 120px;      /* Set the font size */</string>
-               </property>
-               <property name="alignment">
-                <set>Qt::AlignmentFlag::AlignCenter</set>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLineEdit" name="lineEdit_8">
-               <property name="styleSheet">
-                <string notr="true">
-    border-radius: 50px;    /* Make the area circular */
-    background-color: white; /* Optional: Set background color */
- width: 127px;          /* Set the width of the circular area */
-    height: 136px;         /* Set the height of the circular area */
-    color: #757397;         /* Set text color to purple */
-    text-align: center;    /* Center the text */
-  font-size: 120px;      /* Set the font size */</string>
-               </property>
-               <property name="alignment">
-                <set>Qt::AlignmentFlag::AlignCenter</set>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLineEdit" name="lineEdit_9">
-               <property name="styleSheet">
-                <string notr="true">
-    border-radius: 50px;    /* Make the area circular */
-    background-color: white; /* Optional: Set background color */
- width: 127px;          /* Set the width of the circular area */
-    height: 136px;         /* Set the height of the circular area */
-    color: #757397;         /* Set text color to purple */
-    text-align: center;    /* Center the text */
-  font-size: 120px;      /* Set the font size */</string>
-               </property>
-               <property name="alignment">
-                <set>Qt::AlignmentFlag::AlignCenter</set>
+               <property name="accessibleName">
+                <string>Room code</string>
                </property>
               </widget>
              </item>

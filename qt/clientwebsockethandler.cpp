@@ -12,9 +12,23 @@ ClientWebSocketHandler::ClientWebSocketHandler(QObject* parent)
     : QObject { parent }
 {
     connect(this, &ClientWebSocketHandler::startConnection, this, &ClientWebSocketHandler::openConnection);
+    reconnect_timer.setSingleShot(true);
+    connect(&reconnect_timer, &QTimer::timeout, this, [this]() {
+        openConnection(username, room_id, session_token);
+    });
 }
 
-void ClientWebSocketHandler::openConnection(std::string username, std::string room_id)
+void ClientWebSocketHandler::closeWebSocket()
+{
+    reconnect_timer.stop();
+    if (auto* socket = webSocket.release()) {
+        socket->disconnect(this);
+        socket->abort();
+        socket->deleteLater();
+    }
+}
+
+void ClientWebSocketHandler::openConnection(std::string username, std::string room_id, std::string session_token)
 {
     closeWebSocket();
     webSocket = std::make_unique<QWebSocket>();
@@ -22,36 +36,43 @@ void ClientWebSocketHandler::openConnection(std::string username, std::string ro
     webSocket->setOutgoingFrameSize(10000000);
     connect(webSocket.get(), &QWebSocket::connected, this, &ClientWebSocketHandler::onConnected);
     connect(webSocket.get(), &QWebSocket::disconnected, this, &ClientWebSocketHandler::closed);
-    connect(webSocket.get(), QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::errorOccurred),
-        this, &ClientWebSocketHandler::onError); // Handle WebSocket errors
-    this->username = username;
-    this->room_id = room_id;
+    connect(webSocket.get(), &QWebSocket::errorOccurred, this, &ClientWebSocketHandler::onError);
+    connect(webSocket.get(), &QWebSocket::textMessageReceived, this, &ClientWebSocketHandler::onTextMessageReceived);
+
+    this->username = std::move(username);
+    this->room_id = std::move(room_id);
+    this->session_token = std::move(session_token);
     QWebSocketHandshakeOptions options;
-    options.setSubprotocols({ "echo-protocol" });
-    std::string url_string = NW_WS + "?username=" + username + "&room_id=" + room_id;
-    webSocket->open(QUrl::fromUserInput(QString::fromStdString(url_string)), options);
+    options.setSubprotocols({ "echo-protocol", QString::fromStdString("nw-session." + this->session_token) });
+    QUrl url(QString::fromStdString(NW_WS));
+    QUrlQuery query;
+    query.addQueryItem("room_id", QString::fromStdString(this->room_id));
+    url.setQuery(query);
+    webSocket->open(url, options);
 }
 
 void ClientWebSocketHandler::onConnected()
 {
     qDebug() << "WebSocket connected";
-    connect(webSocket.get(), &QWebSocket::textMessageReceived,
-        this, &ClientWebSocketHandler::onTextMessageReceived);
 }
 
 void ClientWebSocketHandler::closed()
 {
-    qDebug() << "WebSocket closed and cleaned up! Error:" << webSocket->errorString();
-
-    closeWebSocket(); // Ensures the socket is fully cleaned up
-    emit startConnection(this->username, state.room_id);
+    const auto code = webSocket->closeCode();
+    closeWebSocket();
+    if (code == QWebSocketProtocol::CloseCodePolicyViolated) {
+        navigator->goToHomepage();
+        navigator->homepage.setErrorText("The room connection was rejected");
+        return;
+    }
+    reconnect_timer.start(1500);
 }
 
 void ClientWebSocketHandler::onError(QAbstractSocket::SocketError error)
 {
-    qDebug() << "WebSocket error occurred:" << error;
-    closeWebSocket(); // Ensures the socket is fully cleaned up
-    emit startConnection(this->username, state.room_id);
+    qDebug() << "WebSocket connection error:" << error;
+    closeWebSocket();
+    reconnect_timer.start(1500);
 }
 
 void ClientWebSocketHandler::onTextMessageReceived(QString message)
@@ -59,6 +80,11 @@ void ClientWebSocketHandler::onTextMessageReceived(QString message)
     try {
         nlohmann::json event = nlohmann::json::parse(message.toStdString());
         handleEvent(event);
+        const auto objectType = event.value("object_type", -1);
+        if (event["room_id"] == state.room_id
+            && (objectType == STROKE || objectType == SHAPE || objectType == SYMBOL)) {
+            emit canvasObjectChanged(event.at("page_id").get<uint64_t>());
+        }
     } catch (...) {
         qDebug() << "error handling!!!!";
     }
@@ -271,16 +297,9 @@ void ClientWebSocketHandler::handleEvent(const nlohmann::json& event)
         case CanvasObject::CanvasObjectEventType::DELETE: {
             uint64_t object_id = event["object_id"];
             state.manipulatePage(event["page_id"], [object_id](Page& page) {
-                page.manipulateObject(object_id, [](CanvasObject& object) {
-                    QGraphicsScene* scene = object.item->scene();
-                    if (scene) {
-                        scene->removeItem(object.item);
-                    }
-
-                    delete object.item;
-                    object.item = nullptr;
-                });
-                page.deleteObject(object_id);
+                if (auto object = page.deleteObject(object_id)) {
+                    delete object->item;
+                }
             });
             break;
         }
@@ -297,7 +316,7 @@ void ClientWebSocketHandler::handleEvent(const nlohmann::json& event)
         break;
     }
     case RESET: {
-        navigator->goToRoomPageJoin(state.room_id, username, state.password);
+        navigator->goToRoomPageJoin(state.room_id, username);
         break;
     }
     default:

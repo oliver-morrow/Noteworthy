@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "drawingroom.h"
 #include "AppNavigator.hpp"
 #include "RandomIdGenerator.hpp"
@@ -159,12 +160,15 @@ drawingRoom::drawingRoom(QWidget* parent)
     ui->leaveRoom->setIconSize(QSize(19, 19)); // Set icon size if needed
 
     // select button
+    ui->select->setCheckable(true);
+    ui->select->setToolTip("Select and move objects");
     ui->select->setMaximumSize(40, 40); // Set size to be a square
     ui->select->setStyleSheet("QPushButton {"
                               "background-color: rgba(174, 243, 163, 1);"
                               "padding-left: 10px; padding-right: 10px;"
-                              "border-radius: 20px;" // Radius = half of the width/height
-                              "}");
+                              "border-radius: 20px;"
+                              "}"
+                              "QPushButton:checked { background-color: #82d474; }");
     QIcon icon6(":/svg/svg/select.svg"); // Path to your SVG file in the resources or filesystem
     ui->select->setIcon(icon6);
     ui->select->setIconSize(QSize(23, 23)); // Set icon size if needed
@@ -456,12 +460,8 @@ void drawingRoom::on_draw_clicked()
                              "border: none;"
                              "}");
 
-    if (!ui->graphics->selection.sel_list.empty()) {
-        ui->graphics->selection.hideSelBox();
-        ui->graphics->selection.sel_list.clear();
-        ui->graphics->selection.selecting = false;
-        ui->graphics->selection.drag_box->hide();
-    }
+    ui->select->setChecked(false);
+    ui->graphics->selection.clear();
     ui->graphics->touch_state.current_touch_action = TouchState::APPEND_STROKE;
 }
 
@@ -478,12 +478,8 @@ void drawingRoom::on_erase_clicked()
                             "border: none;"
                             "}");
 
-    if (!ui->graphics->selection.sel_list.empty()) {
-        ui->graphics->selection.hideSelBox();
-        ui->graphics->selection.sel_list.clear();
-        ui->graphics->selection.selecting = false;
-        ui->graphics->selection.drag_box->hide();
-    }
+    ui->select->setChecked(false);
+    ui->graphics->selection.clear();
     ui->graphics->touch_state.current_touch_action = TouchState::ERASE_STROKE;
 }
 
@@ -618,8 +614,11 @@ void clearLayout(QVBoxLayout* layout)
         delete item;
     }
 }
-void drawingRoom::initialize(std::string initial_room)
+void drawingRoom::initialize(const std::string& initial_room, const std::string& token)
 {
+    session_token = token;
+    ui->graphics->selection.clear();
+    ui->PasswordEdit->clear();
     ui->graphics->setScene(&no_page_scene);
     ui->graphics->user_id = user_id;
     ui->graphics->resetTransform();
@@ -636,7 +635,7 @@ void drawingRoom::initialize(std::string initial_room)
         ui->graphics->ws_handler.handleEvent(event);
     }
 
-    emit ui->graphics->ws_handler.startConnection(user_id, state.room_id);
+    emit ui->graphics->ws_handler.startConnection(user_id, state.room_id, session_token);
     ui->code->setText(QString::fromStdString(state.room_id));
     setNameLabel(QString::fromStdString(state.owner_id + "'s Room"));
 
@@ -657,21 +656,7 @@ void drawingRoom::initialize(std::string initial_room)
         ui->userKickLabel->hide();
     }
 
-    if (state.room_id == "12345") {
-        if (user_id == state.owner_id) {
-            ui->setting1->show();
-            ui->setting2->show();
-            ui->setting3->show();
-        } else {
-            ui->setting1->hide();
-            ui->setting2->hide();
-            ui->setting3->hide();
-        }
-    } else {
-        ui->setting1->show();
-        ui->setting2->show();
-        ui->setting3->show();
-    }
+    ui->setting2->setVisible(NW_ENABLE_PDF);
 
     // go to the page view
     on_pages_clicked();
@@ -694,7 +679,7 @@ void drawingRoom::select_page(uint64_t page_id)
         [&page_id](const auto& pair) { return pair.first == page_id; });
 
     if (it == thumbnailList.end()) {
-        navigator->goToRoomPageJoin(state.room_id, ui->graphics->user_id, state.password);
+        navigator->goToRoomPageJoin(state.room_id, ui->graphics->user_id);
         return;
     }
 
@@ -825,6 +810,7 @@ void drawingRoom::handleDeletePageUIChange(uint64_t page_id)
     // Handle the empty page scenario
     if (go_to_empty_page) {
         ui->graphics->current_page_id = 0;
+        ui->graphics->selection.clear();
         ui->graphics->setScene(&no_page_scene);
         return;
     }
@@ -905,55 +891,50 @@ void drawingRoom::showErrorMessage(const QString& message)
     });
 }
 
-void drawingRoom::createShape(Shape::ShapeType type)
+template <typename Object>
+void drawingRoom::insertSvgObject(Object& object, const QString& path)
 {
-
-    if (ui->graphics->current_page_id == 0) {
+    auto& view = *ui->graphics;
+    if (view.current_page_id == 0) {
         showErrorMessage("Error: No active page.");
         return;
     }
 
-    Shape shape = Shape(type);
-    uint64_t new_id = IDGenerator::newID();
-    shape.object_id = new_id;
-    shape.room_id = state.room_id;
-    shape.page_id = ui->graphics->current_page_id;
-    shape.owner_id = ui->graphics->user_id;
-
-    std::random_device rd; // Seed for random number generator
-    std::mt19937 gen(rd()); // Mersenne Twister random number generator
-
-    std::uniform_int_distribution<> dist(0, 300);
-
-    double randomNumber1 = dist(gen) * 1.5;
-    double randomNumber2 = dist(gen);
-
-    shape.top_left = { randomNumber1, randomNumber2 };
-
-    QSvgRenderer renderer(Shape::shapeSvgPaths.at(type));
-    if (!renderer.isValid()) {
-        qDebug() << "SVG file is invalid for type:" << type;
+    QSvgRenderer renderer(path);
+    const QSizeF dimensions = renderer.defaultSize();
+    if (!renderer.isValid() || dimensions.isEmpty()) {
         return;
     }
 
-    QSizeF dimensions = renderer.defaultSize(); // Get default size of the SVG
-    shape.bottom_left = {
-        shape.top_left[0],
-        shape.top_left[1] + dimensions.height()
-    };
-    shape.bottom_right = {
-        shape.top_left[0] + dimensions.width(),
-        shape.top_left[1] + dimensions.height()
-    };
+    const auto page = view.sceneRect();
+    const auto visible = view.mapToScene(view.viewport()->rect()).boundingRect().intersected(page);
+    const auto center = visible.isEmpty() ? page.center() : visible.center();
+    const auto size = dimensions.boundedTo(page.size());
+    const auto x = std::clamp(center.x() - size.width() / 2, page.left(), page.right() - size.width());
+    const auto y = std::clamp(center.y() - size.height() / 2, page.top(), page.bottom() - size.height());
+    object.top_left = { x, y };
+    object.bottom_left = { x, y + size.height() };
+    object.bottom_right = { x + size.width(), y + size.height() };
+    object.object_id = IDGenerator::newID();
+    object.room_id = state.room_id;
+    object.page_id = view.current_page_id;
+    object.owner_id = view.user_id;
 
     nlohmann::json event;
-    shape.createCreateEvent(event);
+    object.createCreateEvent(event);
+    view.ws_handler.sendEvent(event);
+    view.ws_handler.handleEvent(event);
 
-    ui->graphics->ws_handler.sendEvent(event);
-    ui->graphics->ws_handler.handleEvent(event);
+    on_select_clicked();
+    view.selection.selectObject(view.scene(), view.current_page_id, object.object_id);
 }
 
-// add shape fucntionality once done
+void drawingRoom::createShape(Shape::ShapeType type)
+{
+    Shape shape(type);
+    insertSvgObject(shape, Shape::shapeSvgPaths.at(type));
+}
+
 void drawingRoom::on_shape1_clicked()
 {
     createShape(Shape::SQUARE);
@@ -1001,52 +982,10 @@ void drawingRoom::on_shape9_clicked()
 
 void drawingRoom::createSymbol(Symbol::SymbolType type)
 {
-
-    if (ui->graphics->current_page_id == 0) {
-        showErrorMessage("Error: No active page.");
-        return;
-    }
-
-    Symbol symbol = Symbol(type);
-    uint64_t new_id = IDGenerator::newID();
-    symbol.object_id = new_id;
-    symbol.room_id = state.room_id;
-    symbol.page_id = ui->graphics->current_page_id;
-    symbol.owner_id = ui->graphics->user_id;
-
-    std::random_device rd; // Seed for random number generator
-    std::mt19937 gen(rd()); // Mersenne Twister random number generator
-
-    std::uniform_int_distribution<> dist(0, 300);
-
-    // Generate two random numbers
-    double randomNumber1 = dist(gen) * 1.5;
-    double randomNumber2 = dist(gen);
-
-    symbol.top_left = { randomNumber1, randomNumber2 };
-    QSvgRenderer renderer(Symbol::symbolSvgPaths.at(type));
-    if (!renderer.isValid()) {
-        qDebug() << "SVG file is invalid for type:" << type;
-        return;
-    }
-    QSizeF dimensions = renderer.defaultSize(); // Get default size of the SVG
-    symbol.bottom_left = {
-        symbol.top_left[0],
-        symbol.top_left[1] + dimensions.height()
-    };
-    symbol.bottom_right = {
-        symbol.top_left[0] + dimensions.width(),
-        symbol.top_left[1] + dimensions.height()
-    };
-
-    nlohmann::json event;
-    symbol.createCreateEvent(event);
-
-    ui->graphics->ws_handler.sendEvent(event);
-    ui->graphics->ws_handler.handleEvent(event);
+    Symbol symbol(type);
+    insertSvgObject(symbol, Symbol::symbolSvgPaths.at(type));
 }
 
-// add code once symbols are implemented
 void drawingRoom::on_symbol1_clicked()
 {
     createSymbol(Symbol::CAPACITOR);
@@ -1136,7 +1075,7 @@ void drawingRoom::on_setting3_clicked()
 void drawingRoom::on_setting2_clicked()
 {
 #ifdef __EMSCRIPTEN__ // if its webassembly
-    open_file_and_process(state.room_id.c_str(), std::to_string(ui->graphics->current_page_id).c_str(), NW_HTTP.c_str(), state.password.c_str());
+    open_file_and_process(state.room_id.c_str(), std::to_string(ui->graphics->current_page_id).c_str(), NW_HTTP.c_str(), session_token.c_str());
 #endif
 
     qDebug() << "function jover";
@@ -1144,7 +1083,8 @@ void drawingRoom::on_setting2_clicked()
 
 void drawingRoom::on_select_clicked()
 {
-    ui->graphics->touch_state.current_touch_action = TouchState::DRAG_SELECTION;
+    ui->select->setChecked(true);
+    ui->graphics->touch_state.current_touch_action = TouchState::SELECT_OBJECTS;
 }
 
 void drawingRoom::handleUserUpdate() {
@@ -1191,6 +1131,7 @@ void drawingRoom::on_PasswordSetButton_clicked()
 {
     nlohmann::json event;
     state.createChangePasswordEvent(event, ui->PasswordEdit->text().toStdString());
+    ui->PasswordEdit->clear();
     ui->graphics->ws_handler.handleEvent(event);
     ui->graphics->ws_handler.sendEvent(event);
 }

@@ -22,16 +22,8 @@ public:
 
     uint64_t getObjectIdFromGraphicsItem(QGraphicsItem* item)
     {
-        if (pointer_to_id_map.count(item) == 0) {
-            return -1;
-        }
-
-               // selecting anything other than stroke is broken
-        // if (object_map.at(pointer_to_id_map.at(item))->getObjectType() != STROKE) {
-        //     return -1;
-        // }
-
-        return pointer_to_id_map.at(item);
+        const auto found = pointer_to_id_map.find(item);
+        return found == pointer_to_id_map.end() ? uint64_t(-1) : found->second;
     }
 #endif
     enum PageEventType {
@@ -89,6 +81,9 @@ public:
             return nullptr;
         }
         std::unique_ptr<CanvasObject> object = std::move(object_map.at(id));
+#ifdef NOTEWORTHY_QT
+        pointer_to_id_map.erase(object->item);
+#endif
         object_map.erase(id);
         return object;
     }
@@ -147,12 +142,10 @@ private:
 class RoomState : public SendableObject {
 public:
     std::string owner_id;
-    std::string password;
 
-    RoomState(std::string room_id, std::string owner_id, std::string password)
+    RoomState(std::string room_id, std::string owner_id)
         : SendableObject(room_id)
         , owner_id(owner_id)
-        , password(password)
     {
         auto owner_connection = std::make_unique<User>(room_id, owner_id);
         addUser(std::move(owner_connection));
@@ -183,7 +176,6 @@ public:
     {
         addMetaInformation(json);
         json["owner_id"] = owner_id;
-        json["password"] = password;
         json["object_type"] = ROOM;
     }
 
@@ -191,7 +183,6 @@ public:
     {
         retrieveMetaInformation(json);
         json.at("owner_id").get_to(owner_id);
-        json.at("password").get_to(password);
     }
 
     void toJsonEventList(nlohmann::json& json)
@@ -267,12 +258,6 @@ public:
         json["new_password"] = new_password;
     }
 
-    void applyChangePasswordEvent(const nlohmann::json& json)
-    {
-        std::string new_password = json.at("new_password");
-        password = new_password;
-    }
-
     void createPromoteUserEvent(nlohmann::json& json, std::string username)
     {
         addMetaInformation(json);
@@ -299,10 +284,8 @@ public:
             throw std::runtime_error("shouldn't delete room from roomState");
             break;
         }
-        case RoomEventType::CHANGE_PASSWORD: {
-            applyChangePasswordEvent(json);
+        case RoomEventType::CHANGE_PASSWORD:
             break;
-        }
         case RoomEventType::PROMOTE_USER: {
             applyPromoteUserEvent(json);
             break;

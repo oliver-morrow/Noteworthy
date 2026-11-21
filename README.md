@@ -104,22 +104,25 @@ python server/test/websocket-client-test.py
 
 The tests target `http://localhost:8080` and `ws://localhost:8081` by default.
 
-## Client build status
+## Client build
 
-The Qt target depends on Qt 6 Widgets, WebSockets, SVG, and SVG Widgets. The
-checked-in client container expects artifacts from a Qt 6.8 single-threaded
-WebAssembly build and serves them with the correct `application/wasm` MIME type.
+The Compose client image builds Qt 6.8.3 single-threaded WebAssembly and serves
+it through nginx. Run the client and server locally from the repository root.
 
-**TODO:** Document and automate a clean Qt WebAssembly build from a fresh
-checkout. The repository currently contains the CMake target and deployment
-container, but not a complete reproducible client-build command.
+```bash
+NW_HTTP_URL=http://localhost:8084 NW_WS_URL=ws://localhost:8081 \
+  docker compose -f server/compose.yaml --profile local up -d --build
+```
+
+Open `http://localhost:8084`.
 
 ## Current constraints
 
 - Room, page, user, and canvas state live in the server process. Restarting the
   server loses active rooms; durable persistence and recovery are not
   implemented.
-- Hosted and local API endpoints are selected at compile time in `qt/hosts.hpp`.
+- Hosted and local endpoints are set at build time with `NW_HTTP_URL` and
+  `NW_WS_URL`.
 - The project is a working prototype and still contains incomplete paths,
   including text objects and some canvas transforms.
 
